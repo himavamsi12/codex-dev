@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Test Injector</title>
+</head>
+
+<body>
+    <h1>Testing Asset Extractor Injections</h1>
+
+    <!-- Simulate Chrome Tabs API -->
+    <script>
+        const chrome = {
+            tabs: { query: (q, cb) => cb([{ id: 1 }]) },
+            scripting: {
+                executeScript: (args, cb) => {
+                    console.log("Mock injecting script:", args.files[0]);
+                    const script = document.createElement('script');
+                    script.src = args.files[0];
+                    if (cb) script.onload = cb;
+                    document.body.appendChild(script);
+                }
+            }
+        };
+        const window = { close: () => console.log("Mock popup closed") };
+    </script>
+
+    <button id="toggle-asset-extractor">Trigger Extraction (Mock Popup)</button>
+    <script src="popup.js"></script>
+    <script>
+        document.getElementById('toggle-asset-extractor').click();
+    </script>
+</body>
+
+</html>

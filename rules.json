@@ -1,0 +1,20 @@
+[
+  {
+    "id": 100,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        {
+          "header": "X-Codex-Dev",
+          "operation": "set",
+          "value": "enabled"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "|http",
+      "resourceTypes": ["main_frame", "sub_frame"]
+    }
+  }
+]

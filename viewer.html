@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codex Dev</title>
+    <link rel="stylesheet" href="viewer.css">
+</head>
+
+<body>
+    <div class="viewer-container">
+        <!-- Header Controls -->
+        <header class="viewer-header">
+            <div class="header-left">
+                <h1>Codex Dev</h1>
+                <div class="url-display" id="url-display"></div>
+            </div>
+            <div class="header-center">
+                <div class="zoom-control">
+                    <label for="zoom-slider">🔍 Zoom:</label>
+                    <input type="range" id="zoom-slider" min="25" max="100" value="100" step="5">
+                    <span id="zoom-value">100%</span>
+                </div>
+                <div class="user-agent-control"
+                    style="margin-left: 20px; display: flex; align-items: center; gap: 8px;">
+                    <label for="ua-selector">User Agent:</label>
+                    <select id="ua-selector"
+                        style="padding: 4px; border-radius: 4px; border: 1px solid #444; background: #333; color: white;">
+                        <option value="">Default (No Spoofing)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="header-right">
+                <button class="control-btn" id="add-device" title="Add Device">
+                    <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    <span>Add Device</span>
+                </button>
+                <button class="control-btn" id="refresh-all" title="Refresh All">
+                    <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"></polyline>
+                        <polyline points="1 20 1 14 7 14"></polyline>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                    </svg>
+                </button>
+                <button class="control-btn" id="sync-scroll" title="Sync Scroll">
+                    <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                    </svg>
+                </button>
+
+                <button class="control-btn" id="screenshot" title="Take Screenshots">
+                    <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z">
+                        </path>
+                        <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Device Selector Modal -->
+        <div class="device-selector-modal" id="device-selector">
+            <div class="device-selector-overlay"></div>
+            <div class="device-selector-content">
+                <div class="device-selector-header">
+                    <h3>Add Device</h3>
+                    <button class="modal-close-btn" id="close-modal">✕</button>
+                </div>
+                <div class="device-categories">
+                    <button class="category-btn active" data-category="all">All</button>
+                    <button class="category-btn" data-category="mobile">📱 Mobile</button>
+                    <button class="category-btn" data-category="tablet">📱 Tablet</button>
+                    <button class="category-btn" data-category="desktop">🖥️ Desktop</button>
+                    <button class="category-btn" data-category="custom">⚙️ Custom</button>
+                </div>
+                <div class="custom-device-form" id="custom-device-form" style="display: none;">
+                    <h4>Create Custom Device</h4>
+                    <div class="custom-inputs">
+                        <div class="input-group">
+                            <label for="custom-width">Width (px)</label>
+                            <input type="number" id="custom-width" placeholder="375" min="100" max="4000">
+                        </div>
+                        <div class="input-group">
+                            <label for="custom-height">Height (px)</label>
+                            <input type="number" id="custom-height" placeholder="667" min="100" max="4000">
+                        </div>
+                        <div class="input-group">
+                            <label for="custom-name">Name (optional)</label>
+                            <input type="text" id="custom-name" placeholder="My Custom Device">
+                        </div>
+                        <button class="add-custom-btn" id="add-custom-device">Add Custom Device</button>
+                    </div>
+                </div>
+                <div class="device-list-container" id="device-list-container">
+                    <div class="device-list-header">
+                        <h4>Preset Devices</h4>
+                    </div>
+                    <div class="device-list" id="device-list">
+                        <!-- Devices will be populated here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Viewports Container -->
+        <main class="viewports-container" id="viewports-container">
+            <!-- Viewports will be dynamically added here -->
+        </main>
+    </div>
+
+    <script src="data/user-agents.js"></script>
+    <script src="devices.js"></script>
+
+    <script src="design-tools.js"></script>
+    <script src="viewer.js"></script>
+    <script src="device-selector.js"></script>
+</body>
+
+</html>
