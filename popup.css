@@ -183,7 +183,8 @@ section h2 {
 
 /* Force tool buttons to full width */
 #toggle-css-viewer,
-#toggle-asset-extractor {
+#toggle-asset-extractor,
+#toggle-seo-tools {
   grid-column: 1 / -1;
 }
 

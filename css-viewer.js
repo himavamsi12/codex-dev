@@ -335,12 +335,36 @@
                     </div>
                 </div>
                 <div class="control-group">
+                    <label>Font Family</label>
+                    <input type="text" class="control-input" data-prop="fontFamily" placeholder="e.g. Arial, sans-serif">
+                </div>
+                <div class="control-group">
                     <label>Font Size</label>
                     <input type="text" class="control-input" data-prop="fontSize">
                 </div>
                 <div class="control-group">
                     <label>Font Weight</label>
                     <input type="text" class="control-input" data-prop="fontWeight">
+                </div>
+                <div class="control-group">
+                    <label>Line Height</label>
+                    <input type="text" class="control-input" data-prop="lineHeight">
+                </div>
+                <div class="control-group">
+                    <label>Letter Spacing</label>
+                    <input type="text" class="control-input" data-prop="letterSpacing">
+                </div>
+                <div class="control-group">
+                    <label>Text Align</label>
+                    <input type="text" class="control-input" data-prop="textAlign">
+                </div>
+                <div class="control-group">
+                    <label>Text Decoration</label>
+                    <input type="text" class="control-input" data-prop="textDecoration">
+                </div>
+                <div class="control-group">
+                    <label>Text Transform</label>
+                    <input type="text" class="control-input" data-prop="textTransform">
                 </div>
             </div>
             
