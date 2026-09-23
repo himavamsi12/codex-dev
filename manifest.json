@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Codex Dev",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Developer's Insight Tool - Responsive viewer with device mockups, design inspector, CSS editor, SEO audit, asset extractor and screenshot capture.",
   "permissions": [
     "activeTab",

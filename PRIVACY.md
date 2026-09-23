@@ -1,125 +1,80 @@
 # Privacy Policy for Codex Dev
 
-**Last Updated:** December 30, 2024
+**Last updated:** September 24, 2026
 
 ## Overview
 
-Codex Dev ("the Extension") is a developer tool for testing websites across multiple responsive screen sizes. This privacy policy explains how we handle data when you use our Chrome extension.
+Codex Dev ("the Extension") is a Chrome extension for web designers and developers. It includes a responsive viewer with device mockups, a design inspector, a visual CSS editor, an SEO audit, an asset extractor, screenshot capture, feedback pins and Codex AI (AI-assisted design edits using your own API key).
 
-## Data Collection
+The Extension has no servers of its own, no accounts, no analytics and no tracking. This policy explains what data the Extension handles and where it goes.
 
-### What We Collect
+## Data stored on your device
 
-The Extension **does not collect or store any data**, locally or otherwise.
+The Extension stores the following in Chrome's local extension storage (`chrome.storage.local`). It never leaves your device unless described below:
 
-### What We DON'T Collect
+- **Settings**: responsive viewer preferences (for example device frames on or off).
+- **Codex AI settings**: the AI provider you chose, the model, and the API key(s) you entered.
+- **Feedback pins**: the notes you write, the page address, the element they're attached to, the screen size and a small screenshot of the annotated element.
 
-- ❌ Personal information
-- ❌ Browsing history
-- ❌ Passwords or credentials
-- ❌ Form data
-- ❌ Cookies from websites you visit
-- ❌ Any data from websites you test
-- ❌ Device preferences or settings (all settings are temporary per session)
+You can delete this data at any time by removing keys or pins in the Extension, or by uninstalling the Extension.
 
-## How We Use Data
+## Data sent to third parties
 
-### No Data Storage
+### Codex AI (only when you use it)
 
-The Extension operates entirely in your browser memory for the duration of your session:
-- No data is stored locally
-- No data is ever transmitted to external servers
-- No analytics or tracking
+Codex AI is off until you add your own API key. It sends data only when you press send in the Codex AI chat. Each request goes directly from your browser to the provider you chose, using your key:
 
-### Website Access
+- **Anthropic** (Claude), when Claude is selected: https://www.anthropic.com/legal/privacy
+- **OpenAI** (ChatGPT models), when ChatGPT is selected: https://openai.com/policies/privacy-policy
 
-The Extension needs to access websites you choose to test:
-- Loads websites in iframes for responsive testing
-- Modifies HTTP headers (X-Frame-Options) to enable iframe loading
-- This is done locally in your browser only
-- No data from these websites is collected or stored
+Each request contains:
+- your message,
+- a screenshot of the area of the page you selected,
+- the HTML and key styles of the selected elements,
+- a summary of the page's design (fonts, colors, spacing values),
+- the page address,
+- earlier messages from the same chat.
 
-## Data Sharing
+Your API key is sent only to that provider, to authenticate the request. The provider handles this data under its own privacy policy and terms, as part of your own account with them. The Extension's developer never receives it.
 
-**We do not share, sell, or transmit any data to third parties.**
+### Link checker and asset downloads (only when you use them)
 
-All processing happens locally in your browser. The Extension:
-- Does not connect to any external servers
-- Does not send analytics
-- Does not track usage
-- Does not share data with anyone
+- The SEO audit's **Check HTTP Status** button requests each link on the page to read its status code.
+- The Asset Extractor downloads the images, fonts, media and animation files you choose to save. It also fetches animation files to check whether they are Lottie animations.
 
-## Permissions Explained
+These requests go straight to the websites that host those files, as if you had opened them yourself. Nothing is sent anywhere else.
 
-The Extension requests the following permissions:
+## Data the Extension does not collect
 
-| Permission | Why We Need It |
-|------------|----------------|
-| `activeTab` | To capture screenshots of viewports you're testing |
-| `tabs` | To open the responsive viewer in a new tab |
-| `declarativeNetRequest` | To modify X-Frame-Options headers so websites can load in iframes |
-| `declarativeNetRequestWithHostAccess` | Required for header modification to work |
-| `<all_urls>` | To load any website you want to test in the responsive viewer |
+- No personal information, accounts or email addresses
+- No browsing history
+- No analytics, telemetry or tracking
+- No passwords or payment data. When pages are shown side by side in the responsive viewer, the Extension deliberately does not copy typing in password and payment-card fields from one device to the others.
 
-## Your Rights
+## Permissions
 
-### Data Control
+| Permission | Why it's needed |
+|---|---|
+| `<all_urls>` (host access) | Run the tools on any website you choose, load sites in the responsive viewer, check links and download assets |
+| `activeTab`, `tabs` | Work with the tab you're on and open the responsive viewer and reports in new tabs |
+| `scripting` | Add the tools (inspector, editor, SEO audit, feedback pins, asset extractor) to the page when you start them |
+| `storage`, `unlimitedStorage` | Save settings, API keys and feedback pins (with their screenshots) on your device |
+| `downloads` | Save screenshots and assets you choose to download |
+| `declarativeNetRequest`, `declarativeNetRequestWithHostAccess` | In the responsive viewer tab only: remove headers that block sites from loading in frames, and set the chosen device's user agent |
+| `webNavigation` | Apply the viewer's device settings to the frames inside the viewer tab |
+| `debugger` | Performance tools in the responsive viewer: slow-network and slow-CPU simulation. Attached only to the viewer tab, and only while you use those tools |
 
-You have full control over your data:
-- **View Data**: Open Chrome DevTools → Application → Storage → Local Storage
-- **Delete Data**: Clear all stored preferences by removing the extension
-- **Opt-Out**: Simply don't use the extension
+## Children's privacy
 
-### No Account Required
+The Extension does not knowingly collect any data from anyone, including children under 13.
 
-The Extension does not require:
-- Account creation
-- Login credentials
-- Email address
-- Any personal information
+## Changes
 
-## Data Security
+If this policy changes, the "Last updated" date above will change too.
 
-- All data stays on your device
-- No transmission to external servers
-- Chrome's built-in security protects your local storage
-- No encryption needed (data never leaves your device)
+## Contact and source code
 
-## Children's Privacy
+The Extension is open source, so you can check exactly what it does:
 
-The Extension does not knowingly collect data from anyone, including children under 13. Since all data is stored locally and no personal information is collected, there are no special considerations for children's privacy.
-
-## Changes to Privacy Policy
-
-We may update this privacy policy from time to time. Changes will be reflected in the "Last Updated" date above. Continued use of the Extension after changes constitutes acceptance of the updated policy.
-
-## Third-Party Websites
-
-When you use the Extension to test websites:
-- Those websites have their own privacy policies
-- We do not control or access data from those websites
-- Please review the privacy policies of websites you visit
-
-## Contact
-
-For questions about this privacy policy or the Extension:
-- **GitHub Issues**: [Your GitHub Repository URL]
-- **Email**: [Your Contact Email]
-
-## Open Source
-
-This Extension is open source. You can review the code to verify our privacy practices:
-- **Source Code**: [Your GitHub Repository URL]
-
-## Summary
-
-**In Plain English:**
-- We don't collect your personal data
-- Everything stays on your computer
-- We don't send anything to servers
-- We don't track you
-- You can delete everything by removing the extension
-
----
-
-**Your privacy matters to us. This extension is built by developers, for developers, with privacy as a core principle.**
+- Source code: https://github.com/himavamsi12/codex-dev
+- Questions: https://github.com/himavamsi12/codex-dev/issues
