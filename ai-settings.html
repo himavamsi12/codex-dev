@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codex AI Settings</title>
+    <link rel="stylesheet" href="tokens.css">
+    <link rel="stylesheet" href="ai-settings.css">
+</head>
+
+<body>
+    <main class="page">
+        <header class="page-header">
+            <img src="logo.png?v=2" alt="" class="logo">
+            <div>
+                <h1>Codex AI</h1>
+                <p class="lede">Select any element on a live site, describe a change, and Codex AI applies it.</p>
+            </div>
+        </header>
+
+        <form class="card" id="settings-form" novalidate>
+            <div class="plan-head">
+                <span class="plan-icon"><i data-icon="sparkles"></i></span>
+                <div>
+                    <h2>Bring your own API key</h2>
+                    <p class="muted">Codex AI runs on your own Claude or ChatGPT API key. You pay the provider directly for what you use.</p>
+                </div>
+                <span class="pill" id="plan-state">Not set up</span>
+            </div>
+
+            <div class="field">
+                <span class="label" id="provider-label">AI provider</span>
+                <div class="segmented" role="radiogroup" aria-labelledby="provider-label">
+                    <label><input type="radio" name="provider" value="anthropic"><span>Claude <small>Anthropic</small></span></label>
+                    <label><input type="radio" name="provider" value="openai"><span>ChatGPT <small>OpenAI</small></span></label>
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="api-key" id="key-label">Anthropic API key</label>
+                <div class="key-row">
+                    <input type="password" id="api-key" autocomplete="off" spellcheck="false" placeholder="sk-ant-...">
+                    <button type="button" class="ghost" id="toggle-key" aria-pressed="false">Show</button>
+                </div>
+                <p class="help" id="key-help"></p>
+            </div>
+
+            <div class="field">
+                <label for="model">Model</label>
+                <select id="model"></select>
+                <p class="help" id="model-help"></p>
+            </div>
+
+            <p class="status" id="status" role="status" hidden></p>
+
+            <div class="actions">
+                <button type="submit" class="primary" id="save">Save</button>
+                <button type="button" class="ghost" id="test">Test key</button>
+                <button type="button" class="ghost danger" id="remove">Remove key</button>
+            </div>
+            <p class="plan-foot">Paid Codex AI plans are coming soon.</p>
+        </form>
+
+        <section class="card privacy">
+            <h2>What gets sent</h2>
+            <p class="muted">Nothing is sent until you press send in the Codex AI chat. Then a screenshot of the selected area, the selected elements' HTML and key styles, the page address and your message go to the provider you chose (Anthropic or OpenAI) with your key. Your keys are stored only in this browser and are only sent to that provider.</p>
+        </section>
+    </main>
+
+    <script src="utils/icons.js"></script>
+    <script src="vendor/claude-service.js"></script>
+    <script src="ai/openai-service.js"></script>
+    <script src="ai-settings.js"></script>
+</body>
+
+</html>

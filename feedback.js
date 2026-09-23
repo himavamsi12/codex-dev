@@ -1,29 +1,34 @@
 (function () {
     'use strict';
 
-    const PANEL_ID   = 'codex-feedback-host';
+    const PANEL_ID    = 'codex-feedback-host';
+    // One storage entry per site; each pin records the page it belongs to
     const STORAGE_KEY = 'codex_fb_' + location.hostname;
 
     // ── Toggle ────────────────────────────────────────────────────────
-    if (window.__codexFeedback) {
-        window.__codexFeedback = false;
-        var _h = document.getElementById(PANEL_ID);
-        if (_h) _h.remove();
-        _cleanupPinMode();
-        _removeAllMarkers();
-        _toast('Feedback mode: OFF');
-        return;
+    // Each injection runs a fresh copy of this script, so the running copy
+    // leaves its own teardown on window (shared by the extension's isolated
+    // world) for the next injection to call.
+    if (typeof window.__codexFeedbackTeardown === 'function') {
+        var wasOpen = !!document.getElementById(PANEL_ID);
+        window.__codexFeedbackTeardown();
+        if (wasOpen) { _toast('Feedback mode: OFF'); return; }
     }
-    window.__codexFeedback = true;
 
     var _pins = [];
+    var _scope = 'page';           // 'page' | 'all'
     var _pinModeActive = false;
-    var _hoverEl = null;
     var _hoverBox = null;
     var _popoverEl = null;
+    var _detailEl = null;
+    var _host, _shadow, _panel, _markerLayer;
+    var _markerEls = {};           // pin id -> marker element
+    var _raf = 0, _tick = 0;
+    var _uiTeardown = null;
 
     // ── Toast ─────────────────────────────────────────────────────────
     function _toast(msg, dur) {
+        if (window.CodexUI) { window.CodexUI.toast(msg, dur); return; }
         dur = dur || 2500;
         var old = document.getElementById('__cx_fb_toast');
         if (old) old.remove();
@@ -33,11 +38,11 @@
         Object.assign(t.style, {
             position: 'fixed', bottom: '30px', left: '50%',
             transform: 'translateX(-50%) translateY(14px)',
-            background: 'linear-gradient(135deg,#4FD1C5,#9F7AEA)',
-            color: '#000', padding: '10px 22px', borderRadius: '30px',
-            zIndex: '2147483647', fontFamily: "'Outfit',system-ui,sans-serif",
-            fontSize: '13px', fontWeight: '700',
-            boxShadow: '0 8px 28px rgba(79,209,197,0.45)',
+            background: '#16171a', border: '1px solid rgba(255,255,255,0.12)',
+            color: '#ececef', padding: '9px 16px', borderRadius: '10px',
+            zIndex: '2147483647', fontFamily: 'system-ui,sans-serif',
+            fontSize: '13px', fontWeight: '500',
+            boxShadow: '0 16px 40px -12px rgba(0,0,0,0.55)',
             transition: 'all 0.3s ease', opacity: '0', pointerEvents: 'none'
         });
         document.body.appendChild(t);
@@ -50,29 +55,59 @@
 
     // ── Storage ───────────────────────────────────────────────────────
     function _loadPins(cb) {
-        chrome.storage.local.get([STORAGE_KEY], function (r) { cb(r[STORAGE_KEY] || []); });
+        chrome.storage.local.get([STORAGE_KEY], function (r) { cb(_migrate(r[STORAGE_KEY] || [])); });
     }
-    function _savePins() {
+    function _savePins(cb) {
         var data = {}; data[STORAGE_KEY] = _pins;
-        chrome.storage.local.set(data);
+        chrome.storage.local.set(data, function () {
+            if (chrome.runtime.lastError) {
+                _toast('Could not save pins: ' + chrome.runtime.lastError.message, 4000);
+            }
+            if (cb) cb();
+        });
     }
-    function _clearPins(cb) {
-        var data = {}; data[STORAGE_KEY] = [];
-        chrome.storage.local.set(data, cb);
+    // Pins saved by older versions only had viewport coordinates
+    function _migrate(pins) {
+        return pins.map(function (p) {
+            if (p.docX == null) { p.docX = (p.x || 0) + (p.scrollX || 0); p.docY = (p.y || 0) + (p.scrollY || 0); }
+            if (!p.page) p.page = _pageKey(p.url || location.href);
+            return p;
+        });
+    }
+    // Hash changes don't make a different page; query strings do
+    function _pageKey(url) {
+        try { var u = new URL(url); return u.origin + u.pathname + u.search; } catch (e) { return url; }
+    }
+    var _thisPage = _pageKey(location.href);
+    function _pagePins() { return _pins.filter(function (p) { return p.page === _thisPage; }); }
+    function _visiblePins() { return _scope === 'page' ? _pagePins() : _pins; }
+    // Number pins per page, in the order they were added
+    function _pinNumber(pin) {
+        return _pins.filter(function (p) { return p.page === pin.page; }).indexOf(pin) + 1;
+    }
+
+    // Another tab (or the report page) changed the pins
+    function _onStorageChanged(changes, area) {
+        if (area !== 'local' || !changes[STORAGE_KEY]) return;
+        _pins = _migrate(changes[STORAGE_KEY].newValue || []);
+        _renderMarkers(); _refreshPanelBody();
     }
 
     // ── Utilities ─────────────────────────────────────────────────────
     function _uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
     function _esc(s) {
-        return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
+    // Line icon from the shared set (utils/icons.js via utils/codex-ui.js)
+    function _ic(name, size) { return window.CodexUI ? window.CodexUI.icon(name, size || 14) : ''; }
     function _breakpoint(w) {
-        if (w < 480)  return { label: 'Mobile S', icon: '📱', color: '#fc8181' };
-        if (w < 768)  return { label: 'Mobile',   icon: '📱', color: '#f6ad55' };
-        if (w < 1024) return { label: 'Tablet',   icon: '📟', color: '#f6e05e' };
-        if (w < 1440) return { label: 'Desktop',  icon: '🖥', color: '#68d391' };
-        return                { label: 'Wide',     icon: '🖥', color: '#63b3ed' };
+        if (w < 480)  return { label: 'Mobile S', icon: 'device-mobile' };
+        if (w < 768)  return { label: 'Mobile',   icon: 'device-mobile' };
+        if (w < 1024) return { label: 'Tablet',   icon: 'device-tablet' };
+        if (w < 1440) return { label: 'Desktop',  icon: 'device-desktop' };
+        return                { label: 'Wide',     icon: 'device-desktop' };
     }
+    // Short, readable label for the element
     function _getSelector(el) {
         if (!el || el === document.body) return 'body';
         var s = el.tagName.toLowerCase();
@@ -83,183 +118,337 @@
         }
         return s;
     }
+    // Unique path used to find the element again later
+    function _cssPath(el) {
+        var parts = [];
+        while (el && el.nodeType === 1 && el !== document.documentElement) {
+            if (el.id) {
+                var idSel = '#' + CSS.escape(el.id);
+                try { if (document.querySelectorAll(idSel).length === 1) { parts.unshift(idSel); break; } } catch (e) { }
+            }
+            var tag = el.tagName.toLowerCase(), parent = el.parentElement;
+            if (!parent) { parts.unshift(tag); break; }
+            var same = Array.prototype.filter.call(parent.children, function (c) { return c.tagName === el.tagName; });
+            parts.unshift(same.length > 1 ? tag + ':nth-of-type(' + (same.indexOf(el) + 1) + ')' : tag);
+            el = parent;
+        }
+        return parts.join(' > ');
+    }
+    function _findAnchor(pin) {
+        if (!pin.path) return null;
+        try {
+            var el = document.querySelector(pin.path);
+            if (el && (!pin.tag || el.tagName === pin.tag) && el.getClientRects().length) return el;
+        } catch (e) { }
+        return null;
+    }
     function _severityMeta(sv) {
         var map = {
-            bug:        { label: 'Bug',        color: '#fc8181', bg: 'rgba(245,101,101,0.15)', icon: '🐛' },
-            suggestion: { label: 'Suggestion', color: '#f6ad55', bg: 'rgba(237,137,54,0.15)',  icon: '💡' },
-            question:   { label: 'Question',   color: '#63b3ed', bg: 'rgba(99,179,237,0.15)',  icon: '❓' },
-            info:       { label: 'Info',       color: '#68d391', bg: 'rgba(72,187,120,0.15)',  icon: 'ℹ️' },
+            bug:        { label: 'Bug',        color: '#f07575', bg: 'rgba(240,117,117,0.12)', icon: 'bug' },
+            suggestion: { label: 'Suggestion', color: '#e8a64a', bg: 'rgba(232,166,74,0.12)',  icon: 'bulb' },
+            question:   { label: 'Question',   color: '#6fb3ec', bg: 'rgba(111,179,236,0.12)', icon: 'help-circle' },
+            info:       { label: 'Info',       color: '#5ccf8d', bg: 'rgba(92,207,141,0.12)',  icon: 'info-circle' },
         };
         return map[sv] || map.info;
     }
-
-    // ── Screenshot of region via background ───────────────────────────
-    function _captureRegion(rect, dpr, cb) {
-        chrome.runtime.sendMessage({
-            action: 'GET_ELEMENT_SCREENSHOT',
-            rect: rect, dpr: dpr || window.devicePixelRatio || 1
-        }, function (res) { cb(res && res.dataUrl ? res.dataUrl : null); });
-    }
-
-    // ── Pin Markers on page ───────────────────────────────────────────
-    function _removeAllMarkers() {
-        document.querySelectorAll('.__cx_pin_marker').forEach(function (m) { m.remove(); });
-    }
-    function _renderMarkers() {
-        _removeAllMarkers();
-        _pins.forEach(function (pin, i) {
-            var sv = _severityMeta(pin.severity);
-            var m = document.createElement('div');
-            m.className = '__cx_pin_marker';
-            m.title = '[' + sv.label + '] ' + pin.note.substring(0, 60);
-            Object.assign(m.style, {
-                position: 'absolute',
-                left: (pin.x + window.scrollX) + 'px',
-                top:  (pin.y + window.scrollY) + 'px',
-                width: '26px', height: '26px',
-                background: sv.color, color: '#000',
-                borderRadius: '50% 50% 50% 0', transform: 'rotate(-45deg)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                zIndex: '2147483640', cursor: 'pointer',
-                boxShadow: '0 3px 10px rgba(0,0,0,0.4)',
-                fontFamily: 'system-ui,sans-serif',
-                fontSize: '10px', fontWeight: '800',
-                border: '2px solid rgba(255,255,255,0.5)'
-            });
-            var inner = document.createElement('div');
-            Object.assign(inner.style, { transform: 'rotate(45deg)', lineHeight: '1' });
-            inner.textContent = i + 1;
-            m.appendChild(inner);
-            document.body.appendChild(m);
-            m.addEventListener('click', function (e) {
-                e.stopPropagation();
-                _showPinDetail(pin, i);
-            });
+    function _nextFrame() {
+        return new Promise(function (r) {
+            var t = setTimeout(r, 120);
+            requestAnimationFrame(function () { requestAnimationFrame(function () { clearTimeout(t); r(); }); });
         });
     }
 
-    // ── Shadow DOM Panel ──────────────────────────────────────────────
-    var _shadow, _panel;
+    // ── Screenshot of the pinned element ──────────────────────────────
+    // Hides the feedback UI first so the highlight box and panel aren't in
+    // the picture, then shrinks the crop to a JPEG to keep storage small.
+    function _captureElement(el) {
+        if (!el || !el.isConnected) return Promise.resolve(null);
+        _host.style.visibility = 'hidden';
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return _nextFrame().then(function () {
+            var r = el.getBoundingClientRect(), pad = 16;
+            var x0 = Math.max(0, r.left - pad), y0 = Math.max(0, r.top - pad);
+            var x1 = Math.min(window.innerWidth, r.right + pad), y1 = Math.min(window.innerHeight, r.bottom + pad);
+            if (x1 - x0 < 4 || y1 - y0 < 4) return null;
+            return new Promise(function (resolve) {
+                chrome.runtime.sendMessage({
+                    action: 'GET_ELEMENT_SCREENSHOT',
+                    rect: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
+                    dpr: window.devicePixelRatio || 1
+                }, function (res) {
+                    if (chrome.runtime.lastError) { resolve(null); return; }
+                    resolve(res && res.dataUrl ? res.dataUrl : null);
+                });
+            });
+        }).then(function (dataUrl) {
+            _host.style.visibility = '';
+            return dataUrl ? _shrink(dataUrl, 720) : null;
+        }, function () { _host.style.visibility = ''; return null; });
+    }
+    function _shrink(dataUrl, maxW) {
+        return new Promise(function (resolve) {
+            var img = new Image();
+            img.onload = function () {
+                var scale = Math.min(1, maxW / img.naturalWidth);
+                var c = document.createElement('canvas');
+                c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+                c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+                var ctx = c.getContext('2d');
+                ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+                ctx.drawImage(img, 0, 0, c.width, c.height);
+                try { resolve(c.toDataURL('image/jpeg', 0.82)); } catch (e) { resolve(dataUrl); }
+            };
+            img.onerror = function () { resolve(dataUrl); };
+            img.src = dataUrl;
+        });
+    }
 
-    function _buildPanel() {
-        var host = document.createElement('div');
-        host.id = PANEL_ID;
-        Object.assign(host.style, { position: 'fixed', left: '0', top: '0', width: '0', height: '0', zIndex: '2147483647' });
-        document.body.appendChild(host);
-        _shadow = host.attachShadow({ mode: 'open' });
-
-        if (!document.getElementById('__cx_fb_fonts')) {
-            var fl = document.createElement('link');
-            fl.id = '__cx_fb_fonts'; fl.rel = 'stylesheet';
-            fl.href = 'https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap';
-            document.head.appendChild(fl);
+    // ── Pin markers (inside the panel's shadow root, fixed position) ──
+    // Each marker follows its element, so it stays put when the page is
+    // scrolled, resized or reflowed. Pins whose element is gone fall back to
+    // where they were on the page.
+    function _pinPoint(pin) {
+        var el = _findAnchor(pin);
+        if (el) {
+            var r = el.getBoundingClientRect();
+            return { x: r.left + (pin.offX || 0) * r.width, y: r.top + (pin.offY || 0) * r.height, anchored: true };
         }
+        return { x: pin.docX - window.scrollX, y: pin.docY - window.scrollY, anchored: false };
+    }
+    function _renderMarkers() {
+        if (!_markerLayer) return;
+        _markerLayer.textContent = '';
+        _markerEls = {};
+        _pagePins().forEach(function (pin) {
+            var sv = _severityMeta(pin.severity);
+            var m = document.createElement('button');
+            m.className = 'marker' + (pin.resolved ? ' resolved' : '');
+            m.style.setProperty('--c', sv.color);
+            m.title = '[' + sv.label + (pin.resolved ? ', resolved' : '') + '] ' + pin.note.substring(0, 80);
+            m.setAttribute('aria-label', 'Pin ' + _pinNumber(pin) + ': ' + pin.note.substring(0, 80));
+            m.innerHTML = '<span>' + _pinNumber(pin) + '</span>';
+            m.addEventListener('click', function (e) {
+                e.stopPropagation();
+                _showPinDetail(pin);
+            });
+            _markerLayer.appendChild(m);
+            _markerEls[pin.id] = m;
+        });
+        _positionMarkers();
+    }
+    function _positionMarkers() {
+        _raf = 0;
+        _pagePins().forEach(function (pin) {
+            var m = _markerEls[pin.id];
+            if (!m) return;
+            var p = _pinPoint(pin);
+            // The marker's point (bottom-left corner) sits on the pinned spot
+            m.style.transform = 'translate(' + Math.round(p.x) + 'px,' + Math.round(p.y - 26) + 'px)';
+            m.classList.toggle('lost', !p.anchored && !!pin.path);
+        });
+        if (_detailEl && _detailEl._pin) _placeNear(_detailEl, _detailEl._pin);
+    }
+    function _schedulePosition() { if (!_raf) _raf = requestAnimationFrame(_positionMarkers); }
+
+    // ── Shadow DOM Panel ──────────────────────────────────────────────
+    function _buildPanel() {
+        _host = document.createElement('div');
+        _host.id = PANEL_ID;
+        Object.assign(_host.style, { position: 'fixed', left: '0', top: '0', width: '0', height: '0', zIndex: '2147483647' });
+        document.documentElement.appendChild(_host);
+        _shadow = _host.attachShadow({ mode: 'open' });
 
         var style = document.createElement('style');
         style.textContent = `
-        :host { font-family:'Outfit',system-ui,sans-serif; font-size:13px; color:#e2e8f0; box-sizing:border-box; }
+        :host { all:initial; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; font-size:13px; color:#ececef; box-sizing:border-box; -webkit-font-smoothing:antialiased; }
         * { box-sizing:border-box; }
+        .cx-icon { flex-shrink:0; display:inline-block; vertical-align:middle; }
+        button { font-family:inherit; }
+        :focus-visible { outline:2px solid #4fd1c5; outline-offset:2px; }
         .panel {
-            position:fixed; top:14px; right:14px;
-            width:340px; max-height:calc(100vh - 28px);
-            background:rgba(10,11,16,0.97); border:1px solid rgba(255,255,255,0.09);
-            border-radius:16px; box-shadow:0 32px 80px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.06);
+            position:fixed; top:12px; right:12px;
+            width:340px; max-height:calc(100vh - 24px);
+            background:#121316; border:1px solid rgba(255,255,255,0.14);
+            border-radius:10px; box-shadow:0 1px 0 rgba(255,255,255,0.04) inset, 0 24px 60px -16px rgba(0,0,0,0.7);
             display:flex; flex-direction:column; overflow:hidden; z-index:10000;
-            backdrop-filter:blur(20px);
+            animation:panelIn 0.35s cubic-bezier(0.16,1,0.3,1);
         }
+        @keyframes panelIn { from { opacity:0; transform:translateX(12px); } to { opacity:1; transform:none; } }
         .hdr { display:flex; justify-content:space-between; align-items:center;
-            padding:12px 16px; background:rgba(0,0,0,0.3); border-bottom:1px solid rgba(255,255,255,0.08);
+            height:48px; padding:0 10px 0 14px; border-bottom:1px solid rgba(255,255,255,0.08);
             cursor:move; flex-shrink:0; user-select:none; }
-        .hdr-title { font-weight:700; font-size:13.5px;
-            background:linear-gradient(135deg,#4FD1C5,#9F7AEA);
-            -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
-            display:flex; align-items:center; gap:7px; }
-        .close-btn { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1);
-            color:#94a3b8; -webkit-text-fill-color:#94a3b8; cursor:pointer; font-size:11px;
-            padding:3px 8px; border-radius:5px; transition:all 0.15s; }
-        .close-btn:hover { color:#fff; -webkit-text-fill-color:#fff; }
+        .hdr-title { font-weight:650; font-size:13.5px; display:flex; align-items:center; gap:8px; }
+        .hdr-title .cx-icon { color:#5fd8cc; }
+        .close-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center;
+            background:none; border:1px solid rgba(255,255,255,0.08); border-radius:6px;
+            color:#9b9ca4; cursor:pointer; transition:color 0.15s, background 0.15s; }
+        .close-btn:hover { color:#ececef; background:rgba(255,255,255,0.05); }
         .body { flex:1; overflow-y:auto; padding:14px; min-height:0;
-            scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.1) transparent; }
-        .body::-webkit-scrollbar { width:4px; }
-        .body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.1); border-radius:2px; }
+            scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.14) transparent; }
+        .body::-webkit-scrollbar { width:6px; }
+        .body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.14); border-radius:999px; }
 
-        /* Pin Mode Toggle */
+        /* Pin Mode toggle */
         .pin-mode-btn {
-            width:100%; padding:11px; border-radius:10px; border:none; cursor:pointer;
-            font-family:'Outfit',sans-serif; font-weight:700; font-size:12.5px;
-            display:flex; align-items:center; justify-content:center; gap:8px;
-            transition:all 0.2s; margin-bottom:12px;
-            background:linear-gradient(135deg,#9F7AEA,#6366f1);
-            color:#fff; box-shadow:0 4px 16px rgba(99,102,241,0.35);
+            width:100%; padding:9px; border-radius:6px; border:1px solid transparent; cursor:pointer;
+            font-weight:600; font-size:12.5px;
+            display:flex; align-items:center; justify-content:center; gap:7px;
+            transition:background 0.15s, transform 0.1s; margin-bottom:12px;
+            background:#4fd1c5; color:#07201d;
         }
-        .pin-mode-btn.active { background:linear-gradient(135deg,#f56565,#e53e3e); box-shadow:0 4px 16px rgba(245,101,101,0.35); }
-        .pin-mode-btn:hover { opacity:0.9; transform:translateY(-1px); }
+        .pin-mode-btn:hover { background:#6adbd0; }
+        .pin-mode-btn:active { transform:scale(0.98); }
+        .pin-mode-btn.active { background:rgba(240,117,117,0.1); color:#f07575; border-color:rgba(240,117,117,0.35); }
+        .pin-mode-btn.active:hover { background:rgba(240,117,117,0.16); }
 
-        /* Stats strip */
+        /* Stats */
         .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:12px; }
-        .stat-c { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-            border-radius:8px; padding:8px 6px; text-align:center; }
-        .stat-n { font-size:18px; font-weight:800; line-height:1; }
-        .stat-l { font-size:9px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; margin-top:2px; }
+        .stat-c { background:#16171a; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:8px 10px; }
+        .stat-n { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:16px; font-weight:600; line-height:1.1; }
+        .stat-l { font-size:11px; color:#9b9ca4; margin-top:2px; }
 
         /* Section label */
-        .sec { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px;
-            color:#4FD1C5; margin-bottom:8px; margin-top:14px; display:flex;
+        .sec { font-size:12px; font-weight:600; margin:14px 0 8px; display:flex;
             justify-content:space-between; align-items:center; }
         .sec:first-child { margin-top:0; }
+        .sec-count { color:#9b9ca4; font-weight:400; }
 
         /* Pin card */
-        .pin-card { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-            border-radius:10px; padding:10px; margin-bottom:7px;
+        .pin-card { background:#16171a; border:1px solid rgba(255,255,255,0.08);
+            border-radius:10px; padding:8px; margin-bottom:6px;
             display:flex; gap:10px; align-items:flex-start;
             transition:border-color 0.15s; cursor:pointer; }
-        .pin-card:hover { border-color:rgba(255,255,255,0.18); }
-        .pin-num { width:24px; height:24px; border-radius:50%; flex-shrink:0;
+        .pin-card:hover { border-color:rgba(255,255,255,0.16); }
+        .pin-num { width:22px; height:22px; border-radius:50%; flex-shrink:0;
             display:flex; align-items:center; justify-content:center;
-            font-size:10px; font-weight:800; color:#000; }
+            font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; font-weight:600; color:#0e0f11; }
         .pin-body { flex:1; min-width:0; }
-        .pin-note { font-size:12px; font-weight:500; color:#fff; line-height:1.4;
+        .pin-note { font-size:12.5px; font-weight:500; line-height:1.4;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .pin-meta { font-size:10px; color:#94a3b8; margin-top:3px; display:flex; gap:6px; flex-wrap:wrap; }
-        .badge { display:inline-flex; align-items:center; gap:3px; padding:2px 6px;
-            border-radius:4px; font-size:9.5px; font-weight:700; white-space:nowrap; }
-        .pin-del { background:none; border:none; color:#94a3b8; cursor:pointer; font-size:13px;
-            padding:2px 4px; border-radius:4px; flex-shrink:0; transition:color 0.15s; }
-        .pin-del:hover { color:#fc8181; }
+        .pin-note em { color:#9b9ca4; }
+        .pin-meta { font-size:11px; color:#9b9ca4; margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+        .pin-sel { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; color:#6e7078; }
+        .badge { display:inline-flex; align-items:center; gap:4px; padding:1px 7px;
+            border-radius:999px; font-size:10.5px; font-weight:600; white-space:nowrap; }
+        .badge.neutral { background:rgba(255,255,255,0.05); color:#9b9ca4; }
+        .pin-del { display:inline-flex; background:none; border:none; color:#6e7078; cursor:pointer;
+            padding:4px; border-radius:6px; flex-shrink:0; transition:color 0.15s, background 0.15s; }
+        .pin-del:hover { color:#f07575; background:rgba(240,117,117,0.1); }
 
         /* Thumb */
-        .pin-thumb { width:48px; height:36px; border-radius:5px; object-fit:cover;
-            border:1px solid rgba(255,255,255,0.12); flex-shrink:0; background:rgba(0,0,0,0.3); }
+        .pin-thumb { width:48px; height:36px; border-radius:6px; object-fit:cover;
+            border:1px solid rgba(255,255,255,0.08); flex-shrink:0; background:#1d1e22; }
+        div.pin-thumb { display:flex; align-items:center; justify-content:center; color:#6e7078; }
 
-        /* Export btn */
-        .export-btn { width:100%; padding:11px; border-radius:10px; border:none; cursor:pointer;
-            font-family:'Outfit',sans-serif; font-weight:700; font-size:12.5px; margin-top:10px;
-            background:linear-gradient(135deg,#4FD1C5,#38b2ac); color:#071515;
-            box-shadow:0 4px 16px rgba(79,209,197,0.3); transition:all 0.2s;
-            display:flex; align-items:center; justify-content:center; gap:8px; }
-        .export-btn:hover { opacity:0.9; transform:translateY(-1px); }
+        /* Actions */
+        .export-btn { width:100%; padding:9px; border-radius:6px; border:none; cursor:pointer;
+            font-weight:600; font-size:12.5px; margin-top:10px;
+            background:#4fd1c5; color:#07201d; transition:background 0.15s, transform 0.1s;
+            display:flex; align-items:center; justify-content:center; gap:7px; }
+        .export-btn:hover { background:#6adbd0; }
+        .export-btn:active { transform:scale(0.98); }
         .export-btn:disabled { opacity:0.4; cursor:not-allowed; transform:none; }
-        .clear-btn { background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1);
-            color:#94a3b8; -webkit-text-fill-color:#94a3b8; border-radius:8px; padding:8px; cursor:pointer;
-            font-family:'Outfit',sans-serif; font-size:11px; font-weight:600; width:100%; margin-top:6px;
-            transition:all 0.15s; }
-        .clear-btn:hover { border-color:rgba(245,101,101,0.4); color:#fc8181; -webkit-text-fill-color:#fc8181; }
-        .empty { color:#94a3b8; text-align:center; padding:24px 16px; font-size:12px; line-height:1.8; }
-        .empty-icon { font-size:32px; display:block; margin-bottom:8px; }
+        .clear-btn { display:flex; align-items:center; justify-content:center; gap:6px;
+            background:none; border:1px solid rgba(255,255,255,0.08);
+            color:#9b9ca4; border-radius:6px; padding:8px; cursor:pointer;
+            font-size:12px; font-weight:500; width:100%; margin-top:6px;
+            transition:color 0.15s, border-color 0.15s, background 0.15s; }
+        .clear-btn:hover { border-color:rgba(240,117,117,0.35); color:#f07575; background:rgba(240,117,117,0.08); }
+        .empty { color:#9b9ca4; text-align:center; padding:24px 16px; font-size:12.5px; line-height:1.6; }
+        .empty-icon { display:flex; justify-content:center; color:#6e7078; margin-bottom:10px; }
+
+        /* Scope switch */
+        .scope { display:grid; grid-template-columns:1fr 1fr; gap:2px; padding:3px; margin-bottom:12px;
+            background:#1d1e22; border:1px solid rgba(255,255,255,0.08); border-radius:8px; }
+        .scope button { background:none; border:none; color:#9b9ca4; font-size:11.5px; font-weight:550;
+            padding:5px; border-radius:6px; cursor:pointer; }
+        .scope button.on { background:#16171a; color:#ececef; box-shadow:0 1px 2px rgba(0,0,0,0.3); }
+        .page-hd { display:flex; align-items:center; gap:5px; font-size:11px; color:#9b9ca4; margin:10px 0 6px;
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .page-hd span { overflow:hidden; text-overflow:ellipsis; }
+        .page-hd.here { color:#5fd8cc; }
+        .pin-card:focus-visible { outline:2px solid #4fd1c5; outline-offset:1px; }
+        .pin-card.resolved { opacity:0.55; }
+        .pin-card.resolved .pin-note { text-decoration:line-through; }
+        .btn-row { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+        .btn-row .clear-btn:not(.danger):hover { border-color:rgba(255,255,255,0.16); color:#ececef; background:rgba(255,255,255,0.05); }
+
+        /* Markers */
+        .markers { position:fixed; inset:0; pointer-events:none; overflow:hidden; z-index:1; }
+        .marker { position:absolute; left:0; top:0; pointer-events:auto; width:26px; height:26px; padding:0;
+            background:var(--c); color:#0e0f11; border:2px solid #fff; border-radius:50% 50% 50% 0;
+            box-shadow:0 4px 12px rgba(0,0,0,0.35); cursor:pointer;
+            display:flex; align-items:center; justify-content:center;
+            font:600 10.5px ui-monospace,SFMono-Regular,Menlo,monospace; will-change:transform; }
+        .marker:hover { filter:brightness(1.1); }
+        .marker.resolved { opacity:0.5; filter:grayscale(0.7); }
+        .marker.lost { border-style:dashed; }
+        .marker.pulse { animation:pulse 0.9s ease 2; }
+        @keyframes pulse { 50% { box-shadow:0 0 0 8px rgba(79,209,197,0.35), 0 4px 12px rgba(0,0,0,0.35); } }
+        .hover-box { position:fixed; display:none; pointer-events:none; z-index:2;
+            border:2px solid #4fd1c5; background:rgba(79,209,197,0.08); border-radius:6px; }
+
+        /* Detail card + annotation popover */
+        .detail, .popover { position:fixed; z-index:10001; background:#121316; border:1px solid rgba(255,255,255,0.14);
+            border-radius:10px; padding:14px; box-shadow:0 24px 60px -16px rgba(0,0,0,0.7); font-size:12px; }
+        .detail { width:280px; }
+        .popover { width:290px; }
+        .icon-btn { display:inline-flex; background:none; border:1px solid rgba(255,255,255,0.08); color:#9b9ca4;
+            cursor:pointer; padding:4px; border-radius:6px; margin-left:auto; }
+        .icon-btn:hover { color:#ececef; background:rgba(255,255,255,0.05); }
+        .d-top { display:flex; align-items:center; gap:6px; margin-bottom:10px; }
+        .d-shot { display:block; width:100%; max-height:180px; object-fit:contain; background:#1d1e22;
+            border-radius:6px; border:1px solid rgba(255,255,255,0.08); margin-bottom:10px; }
+        .d-note { font-size:13px; font-weight:600; line-height:1.45; margin-bottom:6px; white-space:pre-wrap; word-break:break-word; }
+        .d-sel { font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace; color:#6e7078; word-break:break-all; }
+        .d-meta { display:flex; align-items:center; gap:5px; font-size:11px; color:#9b9ca4; margin-top:6px; }
+        .d-actions { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:12px; }
+        .d-btn { display:inline-flex; align-items:center; justify-content:center; gap:5px; padding:6px 4px;
+            background:none; border:1px solid rgba(255,255,255,0.1); border-radius:6px; color:#ececef;
+            font-size:11.5px; font-weight:550; cursor:pointer; }
+        .d-btn:hover { background:rgba(255,255,255,0.05); }
+        .d-btn.danger:hover, .clear-btn.danger:hover { color:#f07575; border-color:rgba(240,117,117,0.35); background:rgba(240,117,117,0.08); }
+        .p-hd { display:flex; align-items:center; margin-bottom:12px; }
+        .p-title { display:flex; align-items:center; gap:7px; font-weight:650; font-size:13px; }
+        .p-title .cx-icon { color:#5fd8cc; }
+        .p-lbl { display:block; font-size:12px; font-weight:500; color:#9b9ca4; margin-bottom:6px; }
+        .p-sel { font:11px ui-monospace,SFMono-Regular,Menlo,monospace; background:#1d1e22; border:1px solid rgba(255,255,255,0.08);
+            border-radius:6px; padding:6px 8px; margin-bottom:12px; word-break:break-all; }
+        .sev-row { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin-bottom:12px; }
+        .sev-row button { display:flex; flex-direction:column; align-items:center; gap:3px; padding:7px 2px;
+            border-radius:6px; border:1px solid rgba(255,255,255,0.08); background:transparent; color:#9b9ca4;
+            cursor:pointer; font-size:11px; font-weight:550; transition:all 0.15s; }
+        .sev-row button.on { background:var(--bg); border-color:var(--c); color:var(--c); }
+        textarea { width:100%; min-height:72px; background:#16171a; border:1px solid rgba(255,255,255,0.14); color:#ececef;
+            font:inherit; font-size:12.5px; border-radius:6px; padding:8px; outline:none; resize:vertical; }
+        textarea:focus { border-color:#4fd1c5; }
+        textarea.invalid { border-color:#f07575; }
+        .p-err { font-size:11.5px; color:#f07575; margin-top:4px; }
+        .p-err[hidden] { display:none; }
+        .p-actions { display:flex; gap:6px; margin-top:12px; }
+        .p-save { flex:1; padding:8px; background:#4fd1c5; color:#07201d; border:none; border-radius:6px; cursor:pointer; font-weight:600; font-size:12.5px; }
+        .p-save:hover { background:#6adbd0; }
+        .p-cancel { padding:8px 14px; background:none; border:1px solid rgba(255,255,255,0.14); color:#ececef; border-radius:6px; cursor:pointer; font-size:12.5px; }
+        .p-foot { display:flex; align-items:center; justify-content:center; gap:4px; font-size:11px; color:#9b9ca4; margin-top:10px; }
+        kbd { font:10px ui-monospace,SFMono-Regular,Menlo,monospace; padding:0 4px; border:1px solid rgba(255,255,255,0.14); border-radius:4px; }
+
         `;
         _shadow.appendChild(style);
+
+        _markerLayer = document.createElement('div');
+        _markerLayer.className = 'markers';
+        _shadow.appendChild(_markerLayer);
+
+        _hoverBox = document.createElement('div');
+        _hoverBox.className = 'hover-box';
+        _shadow.appendChild(_hoverBox);
 
         _panel = document.createElement('div');
         _panel.className = 'panel';
         _panel.innerHTML = `
         <div class="hdr" id="fb-hdr">
-            <div class="hdr-title">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="-webkit-text-fill-color:unset;">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-                Feedback Pins
-            </div>
-            <button class="close-btn" id="fb-close">✕</button>
+            <div class="hdr-title">${_ic('message-circle', 16)}Feedback Pins</div>
+            <button class="close-btn" id="fb-close" aria-label="Close">${_ic('x', 16)}</button>
         </div>
         <div class="body" id="fb-body"></div>
         `;
@@ -274,197 +463,287 @@
             _panel.style.right = 'auto'; _panel.style.left = psl + 'px'; _panel.style.top = pst + 'px';
             e.preventDefault();
         });
-        document.addEventListener('mousemove', function (e) { if (!drg) return; _panel.style.left = (psl + e.clientX - dsx) + 'px'; _panel.style.top = (pst + e.clientY - dsy) + 'px'; }, true);
-        document.addEventListener('mouseup', function () { drg = false; }, true);
-        _shadow.getElementById('fb-close').addEventListener('click', function () {
-            window.__codexFeedback = false;
-            host.remove(); _cleanupPinMode(); _removeAllMarkers();
-        });
+        function dragMove(e) {
+            if (!drg) return;
+            var r = _panel.getBoundingClientRect();
+            _panel.style.left = Math.min(Math.max(0, psl + e.clientX - dsx), window.innerWidth - r.width) + 'px';
+            _panel.style.top = Math.min(Math.max(0, pst + e.clientY - dsy), window.innerHeight - 48) + 'px';
+        }
+        function dragUp() { drg = false; }
+        document.addEventListener('mousemove', dragMove, true);
+        document.addEventListener('mouseup', dragUp, true);
+        _shadow.getElementById('fb-close').addEventListener('click', _teardownAll);
         _panel.addEventListener('wheel', function (e) { e.stopPropagation(); }, { passive: true });
+        // Typing in our inputs shouldn't trigger the site's keyboard shortcuts
+        ['keydown', 'keyup', 'keypress'].forEach(function (t) {
+            _host.addEventListener(t, function (e) { if (e.key !== 'Escape') e.stopPropagation(); });
+        });
+
+        window.addEventListener('scroll', _schedulePosition, true);
+        window.addEventListener('resize', _schedulePosition);
+        window.addEventListener('keydown', _onEsc, true);
+        chrome.storage.onChanged.addListener(_onStorageChanged);
+        // Layout can also move without scrolling (images loading, menus opening)
+        _tick = setInterval(_schedulePosition, 500);
+
+        _uiTeardown = function () {
+            _disablePinMode(true);
+            _closeDetail();
+            document.removeEventListener('mousemove', dragMove, true);
+            document.removeEventListener('mouseup', dragUp, true);
+            window.removeEventListener('scroll', _schedulePosition, true);
+            window.removeEventListener('resize', _schedulePosition);
+            window.removeEventListener('keydown', _onEsc, true);
+            chrome.storage.onChanged.removeListener(_onStorageChanged);
+            clearInterval(_tick);
+            if (_raf) cancelAnimationFrame(_raf);
+            if (_host) _host.remove();
+        };
 
         _refreshPanelBody();
+    }
+
+    function _onEsc(e) {
+        if (e.key !== 'Escape') return;
+        if (_popoverEl) { _closePinPopover(); }
+        else if (_detailEl) { _closeDetail(); }
+        else if (_pinModeActive) { _disablePinMode(); }
+        else return;
+        e.preventDefault(); e.stopPropagation();
     }
 
     function _refreshPanelBody() {
         if (!_shadow) return;
         var body = _shadow.getElementById('fb-body');
         if (!body) return;
-
-        var bugs = _pins.filter(function(p){ return p.severity==='bug'; }).length;
-        var suggs = _pins.filter(function(p){ return p.severity==='suggestion'; }).length;
-        var qs = _pins.filter(function(p){ return p.severity==='question'; }).length;
-        var infos = _pins.filter(function(p){ return p.severity==='info'; }).length;
+        var list = _visiblePins();
+        var pageCount = _pagePins().length;
+        var count = function (sv) { return list.filter(function (p) { return p.severity === sv && !p.resolved; }).length; };
+        var openCount = list.filter(function (p) { return !p.resolved; }).length;
 
         body.innerHTML = '';
 
         // Pin mode button
         var pmBtn = document.createElement('button');
         pmBtn.className = 'pin-mode-btn' + (_pinModeActive ? ' active' : '');
-        pmBtn.innerHTML = (_pinModeActive
-            ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Stop Pinning'
-            : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> 📌 Enable Pin Mode');
+        pmBtn.innerHTML = _pinModeActive
+            ? _ic('x', 15) + 'Stop Pinning'
+            : _ic('map-pin', 15) + 'Enable Pin Mode';
         pmBtn.addEventListener('click', function () { _pinModeActive ? _disablePinMode() : _enablePinMode(); });
         body.appendChild(pmBtn);
 
-        // Stats
-        if (_pins.length > 0) {
+        // This page / whole site
+        if (_pins.length > pageCount || _scope === 'all') {
+            var seg = document.createElement('div');
+            seg.className = 'scope';
+            seg.innerHTML = '<button data-s="page"' + (_scope === 'page' ? ' class="on"' : '') + '>This page (' + pageCount + ')</button>' +
+                '<button data-s="all"' + (_scope === 'all' ? ' class="on"' : '') + '>Whole site (' + _pins.length + ')</button>';
+            seg.querySelectorAll('button').forEach(function (b) {
+                b.addEventListener('click', function () { _scope = b.dataset.s; _refreshPanelBody(); });
+            });
+            body.appendChild(seg);
+        }
+
+        // Stats (open pins only)
+        if (list.length > 0) {
             var stats = document.createElement('div');
             stats.className = 'stats';
             stats.innerHTML = `
-                <div class="stat-c"><div class="stat-n" style="color:#fc8181">${bugs}</div><div class="stat-l">Bugs</div></div>
-                <div class="stat-c"><div class="stat-n" style="color:#f6ad55">${suggs}</div><div class="stat-l">Suggests</div></div>
-                <div class="stat-c"><div class="stat-n" style="color:#63b3ed">${qs}</div><div class="stat-l">Questions</div></div>
-                <div class="stat-c"><div class="stat-n" style="color:#68d391">${infos}</div><div class="stat-l">Info</div></div>
+                <div class="stat-c"><div class="stat-n" style="color:#f07575">${count('bug')}</div><div class="stat-l">Bugs</div></div>
+                <div class="stat-c"><div class="stat-n" style="color:#e8a64a">${count('suggestion')}</div><div class="stat-l">Suggests</div></div>
+                <div class="stat-c"><div class="stat-n" style="color:#6fb3ec">${count('question')}</div><div class="stat-l">Questions</div></div>
+                <div class="stat-c"><div class="stat-n" style="color:#5ccf8d">${count('info')}</div><div class="stat-l">Info</div></div>
             `;
             body.appendChild(stats);
         }
 
-        // Pins list
         var sec = document.createElement('div');
         sec.className = 'sec';
-        sec.innerHTML = 'Pins <span style="color:#94a3b8;font-weight:400;text-transform:none;letter-spacing:0;">' + _pins.length + ' total</span>';
+        sec.innerHTML = 'Pins <span class="sec-count">' + openCount + ' open' + (list.length > openCount ? ', ' + (list.length - openCount) + ' resolved' : '') + '</span>';
         body.appendChild(sec);
 
-        if (_pins.length === 0) {
+        if (list.length === 0) {
             var empty = document.createElement('div');
             empty.className = 'empty';
-            empty.innerHTML = '<span class="empty-icon">📌</span>Enable Pin Mode above, then click<br>any element on the page to annotate it.';
+            empty.innerHTML = '<span class="empty-icon">' + _ic('map-pin', 28) + '</span>Enable Pin Mode above, then click<br>any element on the page to annotate it.';
             body.appendChild(empty);
-        } else {
-            _pins.forEach(function (pin, i) {
-                var sv = _severityMeta(pin.severity);
-                var bp = _breakpoint(pin.viewportW);
-                var card = document.createElement('div');
-                card.className = 'pin-card';
-                card.style.borderLeft = '3px solid ' + sv.color;
-
-                var thumbHtml = pin.screenshot
-                    ? '<img class="pin-thumb" src="' + _esc(pin.screenshot) + '" alt="pin screenshot">'
-                    : '<div class="pin-thumb" style="display:flex;align-items:center;justify-content:center;font-size:18px;">🖼</div>';
-
-                card.innerHTML = `
-                    <div class="pin-num" style="background:${sv.color}">${i+1}</div>
-                    ${thumbHtml}
-                    <div class="pin-body">
-                        <div class="pin-note" title="${_esc(pin.note)}">${_esc(pin.note) || '<em style="color:#94a3b8">No note</em>'}</div>
-                        <div class="pin-meta">
-                            <span class="badge" style="background:${sv.bg};color:${sv.color};border:1px solid ${sv.color}33;">${sv.icon} ${sv.label}</span>
-                            <span class="badge" style="background:rgba(255,255,255,0.05);color:#94a3b8;border:1px solid rgba(255,255,255,0.1);">${bp.icon} ${bp.label}</span>
-                            <span style="color:#718096;">${_esc(pin.selector)}</span>
-                        </div>
-                    </div>
-                    <button class="pin-del" data-idx="${i}" title="Delete pin">🗑</button>
-                `;
-                card.querySelector('.pin-del').addEventListener('click', function (e) {
-                    e.stopPropagation();
-                    _pins.splice(parseInt(this.dataset.idx), 1);
-                    _savePins(); _renderMarkers(); _refreshPanelBody();
-                });
-                card.addEventListener('click', function () {
-                    window.scrollTo({ top: pin.scrollY - window.innerHeight/2 + pin.y, behavior: 'smooth' });
-                    _toast('→ Pin ' + (i+1) + ': ' + pin.note.substring(0, 30), 1800);
-                });
-                body.appendChild(card);
-            });
-
-            // Export button
-            var expBtn = document.createElement('button');
-            expBtn.className = 'export-btn';
-            expBtn.innerHTML = '📄 Export Feedback PDF';
-            expBtn.addEventListener('click', _exportFeedback);
-            body.appendChild(expBtn);
-
-            var clearBtn = document.createElement('button');
-            clearBtn.className = 'clear-btn';
-            clearBtn.textContent = '🗑 Clear all pins';
-            clearBtn.addEventListener('click', function () {
-                if (!confirm('Clear all ' + _pins.length + ' pins?')) return;
-                _pins = []; _clearPins(function () { _renderMarkers(); _refreshPanelBody(); });
-            });
-            body.appendChild(clearBtn);
+            return;
         }
+
+        var lastPage = null;
+        list.forEach(function (pin) {
+            // Group by page when showing the whole site
+            if (_scope === 'all' && pin.page !== lastPage) {
+                lastPage = pin.page;
+                var ph = document.createElement('div');
+                ph.className = 'page-hd' + (pin.page === _thisPage ? ' here' : '');
+                var path = pin.page.replace(location.origin, '') || '/';
+                ph.innerHTML = _ic(pin.page === _thisPage ? 'map-pin' : 'external-link', 12) + '<span>' + _esc(pin.page === _thisPage ? path + ' (this page)' : path) + '</span>';
+                body.appendChild(ph);
+            }
+            var sv = _severityMeta(pin.severity);
+            var bp = _breakpoint(pin.viewportW);
+            var card = document.createElement('div');
+            card.className = 'pin-card' + (pin.resolved ? ' resolved' : '');
+            card.tabIndex = 0;
+
+            var thumbHtml = pin.screenshot
+                ? '<img class="pin-thumb" src="' + _esc(pin.screenshot) + '" alt="">'
+                : '<div class="pin-thumb">' + _ic('photo-off', 16) + '</div>';
+
+            card.innerHTML = `
+                <div class="pin-num" style="background:${sv.color}">${pin.resolved ? _ic('check', 12) : _pinNumber(pin)}</div>
+                ${thumbHtml}
+                <div class="pin-body">
+                    <div class="pin-note" title="${_esc(pin.note)}">${_esc(pin.note)}</div>
+                    <div class="pin-meta">
+                        <span class="badge" style="background:${sv.bg};color:${sv.color};">${_ic(sv.icon, 12)}${sv.label}</span>
+                        <span class="badge neutral">${_ic(bp.icon, 12)}${bp.label}</span>
+                        <span class="pin-sel">${_esc(pin.selector)}</span>
+                    </div>
+                </div>
+                <button class="pin-del" title="Delete pin" aria-label="Delete pin">${_ic('trash', 15)}</button>
+            `;
+            card.querySelector('.pin-del').addEventListener('click', function (e) {
+                e.stopPropagation();
+                _deletePin(pin);
+            });
+            function open() {
+                if (pin.page !== _thisPage) { location.href = pin.url; return; }
+                _goToPin(pin);
+            }
+            card.addEventListener('click', open);
+            card.addEventListener('keydown', function (e) { if (e.key === 'Enter') open(); });
+            body.appendChild(card);
+        });
+
+        var expBtn = document.createElement('button');
+        expBtn.className = 'export-btn';
+        expBtn.innerHTML = _ic('file-download', 15) + 'Export Report (PDF)';
+        expBtn.addEventListener('click', _exportFeedback);
+        body.appendChild(expBtn);
+
+        var row = document.createElement('div');
+        row.className = 'btn-row';
+        row.innerHTML = '<button class="clear-btn" id="fb-md">' + _ic('copy', 14) + 'Copy as Markdown</button>' +
+            '<button class="clear-btn danger" id="fb-clear">' + _ic('trash', 14) + (_scope === 'page' ? 'Clear page' : 'Clear site') + '</button>';
+        row.querySelector('#fb-md').addEventListener('click', _copyMarkdown);
+        row.querySelector('#fb-clear').addEventListener('click', function () {
+            var doomed = _visiblePins();
+            if (!confirm('Delete ' + doomed.length + ' pin' + (doomed.length !== 1 ? 's' : '') + (_scope === 'page' ? ' on this page' : ' on ' + location.hostname) + '?')) return;
+            _pins = _pins.filter(function (p) { return doomed.indexOf(p) === -1; });
+            _savePins(); _renderMarkers(); _refreshPanelBody();
+        });
+        body.appendChild(row);
     }
 
-    // ── Pin Detail Popover (from clicking marker) ─────────────────────
-    function _showPinDetail(pin, idx) {
-        var old = document.getElementById('__cx_pin_detail');
-        if (old) old.remove();
+    function _deletePin(pin) {
+        _pins = _pins.filter(function (p) { return p !== pin; });
+        _closeDetail();
+        _savePins(); _renderMarkers(); _refreshPanelBody();
+    }
+
+    function _goToPin(pin) {
+        var el = _findAnchor(pin);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        else window.scrollTo({ top: pin.docY - window.innerHeight / 2, behavior: 'smooth' });
+        var m = _markerEls[pin.id];
+        if (m) { m.classList.remove('pulse'); void m.offsetWidth; m.classList.add('pulse'); }
+        setTimeout(function () { _showPinDetail(pin); }, 450);
+    }
+
+    // ── Pin detail (from clicking a marker or card) ───────────────────
+    function _closeDetail() {
+        if (_detailEl) { _detailEl.remove(); _detailEl = null; }
+    }
+    function _placeNear(box, pin) {
+        var p = _pinPoint(pin), w = box.offsetWidth || 280, h = box.offsetHeight || 200;
+        var left = p.x + 20 + w > window.innerWidth - 8 ? p.x - w - 12 : p.x + 20;
+        var top = Math.min(Math.max(8, p.y - 40), window.innerHeight - h - 8);
+        box.style.left = Math.max(8, left) + 'px';
+        box.style.top = Math.max(8, top) + 'px';
+    }
+    function _showPinDetail(pin) {
+        _closeDetail();
         var d = document.createElement('div');
-        d.id = '__cx_pin_detail';
+        d.className = 'detail';
+        d._pin = pin;
         var sv = _severityMeta(pin.severity);
         var bp = _breakpoint(pin.viewportW);
-        Object.assign(d.style, {
-            position: 'fixed', zIndex: '2147483646',
-            left: Math.min(pin.x + 30, window.innerWidth - 280) + 'px',
-            top: Math.max(pin.y - 100, 10) + 'px',
-            width: '270px',
-            background: 'rgba(10,11,16,0.97)', border: '1px solid ' + sv.color + '55',
-            borderRadius: '12px', padding: '14px',
-            fontFamily: "'Outfit',system-ui,sans-serif",
-            boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-            backdropFilter: 'blur(16px)', color: '#e2e8f0', fontSize: '12px'
-        });
         d.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                <span style="background:${sv.bg};color:${sv.color};border:1px solid ${sv.color}44;border-radius:5px;padding:3px 8px;font-size:10px;font-weight:700;">${sv.icon} ${sv.label}</span>
-                <button onclick="this.closest('#__cx_pin_detail').remove()" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:14px;">✕</button>
+            <div class="d-top">
+                <span class="badge" style="background:${sv.bg};color:${sv.color};">${_ic(sv.icon, 12)}${sv.label}</span>
+                ${pin.resolved ? '<span class="badge neutral">' + _ic('check', 12) + 'Resolved</span>' : ''}
+                <button class="icon-btn d-close" aria-label="Close">${_ic('x', 15)}</button>
             </div>
-            ${pin.screenshot ? `<img src="${_esc(pin.screenshot)}" style="width:100%;border-radius:7px;border:1px solid rgba(255,255,255,0.1);margin-bottom:10px;">` : ''}
-            <div style="font-size:13px;font-weight:600;color:#fff;margin-bottom:6px;">${_esc(pin.note)}</div>
-            <div style="font-size:10px;color:#718096;font-family:'JetBrains Mono',monospace;">${_esc(pin.selector)}</div>
-            <div style="font-size:10px;color:#94a3b8;margin-top:6px;">${bp.icon} ${bp.label} · ${pin.viewportW}×${pin.viewportH}px</div>
+            ${pin.screenshot ? `<img class="d-shot" src="${_esc(pin.screenshot)}" alt="">` : ''}
+            <div class="d-note">${_esc(pin.note)}</div>
+            <div class="d-sel">${_esc(pin.selector)}</div>
+            <div class="d-meta">${_ic(bp.icon, 12)}${bp.label}, ${pin.viewportW}×${pin.viewportH}px · ${_esc(new Date(pin.timestamp).toLocaleString())}</div>
+            <div class="d-actions">
+                <button class="d-btn" data-a="resolve">${_ic(pin.resolved ? 'refresh' : 'circle-check', 13)}${pin.resolved ? 'Reopen' : 'Resolve'}</button>
+                <button class="d-btn" data-a="edit">${_ic('pencil', 13)}Edit</button>
+                <button class="d-btn danger" data-a="delete">${_ic('trash', 13)}Delete</button>
+            </div>
         `;
-        document.body.appendChild(d);
-        setTimeout(function () { document.addEventListener('click', function rm(e) { if (!d.contains(e.target)) { d.remove(); document.removeEventListener('click', rm); } }); }, 100);
+        _shadow.appendChild(d);
+        _detailEl = d;
+        _placeNear(d, pin);
+        d.querySelector('.d-close').addEventListener('click', _closeDetail);
+        d.querySelector('[data-a="resolve"]').addEventListener('click', function () {
+            pin.resolved = !pin.resolved;
+            _savePins(); _renderMarkers(); _refreshPanelBody(); _showPinDetail(pin);
+        });
+        d.querySelector('[data-a="edit"]').addEventListener('click', function () {
+            _closeDetail();
+            var p = _pinPoint(pin);
+            _openPinPopover(p.x, p.y, _findAnchor(pin), pin);
+        });
+        d.querySelector('[data-a="delete"]').addEventListener('click', function () { _deletePin(pin); });
     }
+    // Clicking anywhere else on the page closes the detail card
+    function _onDocClick(e) {
+        if (_detailEl && e.target !== _host) _closeDetail();
+    }
+    document.addEventListener('click', _onDocClick, true);
 
     // ── Pin Mode ──────────────────────────────────────────────────────
+    // While pinning, the page must not react to the click (links, buttons,
+    // menus that open on mousedown), so all pointer events are swallowed.
+    var BLOCKED = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick', 'contextmenu'];
+
     function _enablePinMode() {
+        if (_pinModeActive) return;
         _pinModeActive = true;
-        _toast('📌 Pin Mode ON — click any element to annotate', 3000);
-        document.body.style.cursor = 'crosshair';
-
-        // Hover highlight
-        _hoverBox = document.createElement('div');
-        Object.assign(_hoverBox.style, {
-            position: 'fixed', pointerEvents: 'none', zIndex: '2147483644',
-            border: '2px solid #9F7AEA', background: 'rgba(159,122,234,0.07)',
-            borderRadius: '4px', display: 'none', transition: 'all 0.08s'
-        });
-        document.body.appendChild(_hoverBox);
-
+        _closeDetail();
+        _toast('Pin Mode on. Click any element to annotate, Esc to stop', 3000);
+        var cur = document.createElement('style');
+        cur.id = '__cx_pin_cursor';
+        cur.textContent = 'html, html * { cursor: crosshair !important; }';
+        (document.head || document.documentElement).appendChild(cur);
         document.addEventListener('mousemove', _onPinHover, true);
-        document.addEventListener('click', _onPinClick, true);
-        document.addEventListener('keydown', _onPinEsc);
+        BLOCKED.forEach(function (t) { window.addEventListener(t, _onPinPointer, true); });
         _refreshPanelBody();
     }
 
-    function _disablePinMode() {
+    function _disablePinMode(silent) {
+        if (!_pinModeActive) return;
         _pinModeActive = false;
-        document.body.style.cursor = '';
-        if (_hoverBox) { _hoverBox.remove(); _hoverBox = null; }
+        var cur = document.getElementById('__cx_pin_cursor');
+        if (cur) cur.remove();
+        if (_hoverBox) _hoverBox.style.display = 'none';
         document.removeEventListener('mousemove', _onPinHover, true);
-        document.removeEventListener('click', _onPinClick, true);
-        document.removeEventListener('keydown', _onPinEsc);
+        BLOCKED.forEach(function (t) { window.removeEventListener(t, _onPinPointer, true); });
         _closePinPopover();
-        _refreshPanelBody();
+        if (!silent) _refreshPanelBody();
     }
 
-    function _cleanupPinMode() { if (_pinModeActive) _disablePinMode(); }
-
-    function _onPinEsc(e) {
-        if (e.key === 'Escape') {
-            if (_popoverEl) { _closePinPopover(); }
-            else { _disablePinMode(); }
-        }
-    }
+    function _isOurs(el) { return el === _host || (el && el.closest && el.closest('#' + PANEL_ID)); }
 
     function _onPinHover(e) {
         if (!_pinModeActive || _popoverEl) return;
         var el = e.target;
-        if (el === _hoverBox || el.id === '__cx_pin_popover') return;
-        if (el.closest('#' + PANEL_ID)) return;
-        _hoverEl = el;
+        if (_isOurs(el)) { _hoverBox.style.display = 'none'; return; }
         var r = el.getBoundingClientRect();
         Object.assign(_hoverBox.style, {
             display: 'block', left: r.left + 'px', top: r.top + 'px',
@@ -472,322 +751,163 @@
         });
     }
 
-    function _onPinClick(e) {
-        if (!_pinModeActive) return;
-        var el = e.target;
-        if (el.closest('#' + PANEL_ID) || el.closest('#__cx_pin_popover')) return;
-        if (el.classList && el.classList.contains('__cx_pin_marker')) return;
-        e.preventDefault(); e.stopPropagation();
-        _openPinPopover(e.clientX, e.clientY, el);
+    function _onPinPointer(e) {
+        if (!_pinModeActive || _isOurs(e.target)) return;
+        e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+        if (e.type === 'click' && !_popoverEl) _openPinPopover(e.clientX, e.clientY, e.target, null, e);
+        else if (e.type === 'click' && _popoverEl) _closePinPopover();
     }
 
-    // ── Pin Popover ───────────────────────────────────────────────────
-    function _openPinPopover(x, y, el) {
+    // ── Pin popover (new pin, or editing one) ─────────────────────────
+    function _openPinPopover(x, y, el, editing, clickEvent) {
         _closePinPopover();
         var pop = document.createElement('div');
-        pop.id = '__cx_pin_popover';
-        var bp = _breakpoint(window.innerWidth);
-        var left = Math.min(x + 14, window.innerWidth - 300);
-        var top  = Math.min(y + 14, window.innerHeight - 340);
-        Object.assign(pop.style, {
-            position: 'fixed', left: left + 'px', top: top + 'px',
-            width: '290px', zIndex: '2147483646',
-            background: 'rgba(10,11,16,0.98)',
-            border: '1px solid rgba(159,122,234,0.4)',
-            borderRadius: '12px', padding: '16px',
-            fontFamily: "'Outfit',system-ui,sans-serif", color: '#e2e8f0',
-            boxShadow: '0 16px 50px rgba(0,0,0,0.7)',
-            backdropFilter: 'blur(20px)', fontSize: '12px'
-        });
-
-        var rect = el.getBoundingClientRect();
-        var selector = _getSelector(el);
+        pop.className = 'popover';
+        var vw = editing ? editing.viewportW : window.innerWidth, vh = editing ? editing.viewportH : window.innerHeight;
+        var bp = _breakpoint(vw);
+        var selector = editing ? editing.selector : _getSelector(el);
+        var selSev = editing ? editing.severity : 'bug';
 
         pop.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <div style="font-weight:700;font-size:13px;background:linear-gradient(135deg,#9F7AEA,#6366f1);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">📌 Add Annotation</div>
-                <button id="__cx_pop_close" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);color:#94a3b8;cursor:pointer;padding:2px 8px;border-radius:5px;font-size:11px;font-family:inherit;">✕</button>
+            <div class="p-hd">
+                <div class="p-title">${_ic(editing ? 'pencil' : 'map-pin', 16)}${editing ? 'Edit Annotation' : 'Add Annotation'}</div>
+                <button class="icon-btn" data-a="close" aria-label="Close">${_ic('x', 14)}</button>
             </div>
-            <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#94a3b8;margin-bottom:4px;">Element</div>
-            <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#81e6d9;background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:6px 8px;margin-bottom:10px;word-break:break-all;">${_esc(selector)}</div>
-
-            <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#94a3b8;margin-bottom:4px;">Severity</div>
-            <div id="__cx_sev_row" style="display:flex;gap:5px;margin-bottom:10px;">
-                ${[['bug','🐛','Bug','#fc8181'],['suggestion','💡','Suggest','#f6ad55'],['question','❓','Question','#63b3ed'],['info','ℹ️','Info','#68d391']].map(function(s){
-                    return `<button data-sev="${s[0]}" style="flex:1;padding:5px 3px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#94a3b8;cursor:pointer;font-family:inherit;font-size:9.5px;font-weight:700;transition:all 0.15s;" title="${s[2]}">${s[1]}<br>${s[2]}</button>`;
+            <div class="p-lbl">Element</div>
+            <div class="p-sel">${_esc(selector)}</div>
+            <div class="p-lbl">Severity</div>
+            <div class="sev-row">
+                ${['bug', 'suggestion', 'question', 'info'].map(function (k) {
+                    var m = _severityMeta(k);
+                    return '<button data-sev="' + k + '" style="--c:' + m.color + ';--bg:' + m.bg + '" title="' + m.label + '">' + _ic(m.icon, 16) + (k === 'suggestion' ? 'Suggest' : m.label) + '</button>';
                 }).join('')}
             </div>
-
-            <div style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#94a3b8;margin-bottom:4px;">Note</div>
-            <textarea id="__cx_pop_note" placeholder="Describe the issue or feedback…" style="width:100%;min-height:72px;background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.1);color:#fff;font-family:'Outfit',sans-serif;font-size:12px;border-radius:7px;padding:8px;outline:none;resize:vertical;"></textarea>
-
-            <div style="display:flex;gap:7px;margin-top:10px;">
-                <button id="__cx_pop_save" style="flex:1;padding:9px;background:linear-gradient(135deg,#9F7AEA,#6366f1);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-family:inherit;font-size:12px;transition:opacity 0.15s;">Save Pin</button>
-                <button id="__cx_pop_cancel" style="padding:9px 14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:#94a3b8;border-radius:8px;cursor:pointer;font-family:inherit;font-size:12px;">Cancel</button>
+            <label class="p-lbl" for="fb-note">Note</label>
+            <textarea id="fb-note" placeholder="Describe the issue or feedback..."></textarea>
+            <div class="p-err" hidden>Add a note before saving.</div>
+            <div class="p-actions">
+                <button class="p-save" data-a="save">${editing ? 'Save Changes' : 'Save Pin'}</button>
+                <button class="p-cancel" data-a="cancel">Cancel</button>
             </div>
-            <div style="font-size:10px;color:#4FD1C5;margin-top:8px;text-align:center;opacity:0.7;">${bp.icon} ${bp.label} · ${window.innerWidth}×${window.innerHeight}px</div>
+            <div class="p-foot">${_ic(bp.icon, 12)}${bp.label}, ${vw}×${vh}px · <kbd>${navigator.platform.indexOf('Mac') > -1 ? '⌘' : 'Ctrl'}</kbd>+<kbd>Enter</kbd> to save</div>
         `;
-
-        document.body.appendChild(pop);
+        _shadow.appendChild(pop);
         _popoverEl = pop;
+        var pw = 290, ph = pop.offsetHeight || 340;
+        pop.style.left = Math.max(8, Math.min(x + 14, window.innerWidth - pw - 8)) + 'px';
+        pop.style.top = Math.max(8, Math.min(y + 14, window.innerHeight - ph - 8)) + 'px';
 
-        // Severity selection
-        var selSev = 'bug';
+        var note = pop.querySelector('#fb-note');
+        if (editing) note.value = editing.note;
         var sevBtns = pop.querySelectorAll('[data-sev]');
         function updateSevBtns() {
-            sevBtns.forEach(function (b) {
-                var active = b.dataset.sev === selSev;
-                var colors = { bug:'#fc8181', suggestion:'#f6ad55', question:'#63b3ed', info:'#68d391' };
-                b.style.background = active ? 'rgba('+hexToRgb(colors[b.dataset.sev])+',0.2)' : 'rgba(255,255,255,0.04)';
-                b.style.borderColor = active ? colors[b.dataset.sev] : 'rgba(255,255,255,0.1)';
-                b.style.color = active ? colors[b.dataset.sev] : '#94a3b8';
-            });
+            sevBtns.forEach(function (b) { b.classList.toggle('on', b.dataset.sev === selSev); });
         }
         updateSevBtns();
         sevBtns.forEach(function (b) {
-            b.addEventListener('click', function () { selSev = this.dataset.sev; updateSevBtns(); });
+            b.addEventListener('click', function () { selSev = b.dataset.sev; updateSevBtns(); });
         });
+        pop.querySelector('[data-a="close"]').addEventListener('click', _closePinPopover);
+        pop.querySelector('[data-a="cancel"]').addEventListener('click', _closePinPopover);
+        note.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(); }
+        });
+        pop.querySelector('[data-a="save"]').addEventListener('click', save);
 
-        pop.querySelector('#__cx_pop_close').addEventListener('click', _closePinPopover);
-        pop.querySelector('#__cx_pop_cancel').addEventListener('click', _closePinPopover);
+        // Where on the element the user clicked, as a fraction of its box,
+        // so the marker lands on the same spot at other screen sizes
+        var r = el ? el.getBoundingClientRect() : null;
+        var offX = r && r.width ? Math.min(1, Math.max(0, (x - r.left) / r.width)) : 0;
+        var offY = r && r.height ? Math.min(1, Math.max(0, (y - r.top) / r.height)) : 0;
 
-        pop.querySelector('#__cx_pop_save').addEventListener('click', function () {
-            var note = pop.querySelector('#__cx_pop_note').value.trim();
-            if (!note) { pop.querySelector('#__cx_pop_note').style.borderColor = '#f56565'; return; }
+        function save() {
+            var text = note.value.trim();
+            if (!text) { note.classList.add('invalid'); pop.querySelector('.p-err').hidden = false; note.focus(); return; }
+            _closePinPopover();
+            if (editing) {
+                editing.note = text;
+                editing.severity = selSev;
+                _savePins(); _renderMarkers(); _refreshPanelBody();
+                _toast('Pin updated', 1600);
+                return;
+            }
             var pin = {
                 id: _uid(),
                 url: location.href,
+                page: _thisPage,
                 pageTitle: document.title,
                 selector: selector,
-                x: x, y: y,
-                scrollX: window.scrollX, scrollY: window.scrollY,
+                path: _cssPath(el),
+                tag: el.tagName,
+                offX: offX, offY: offY,
+                docX: x + window.scrollX, docY: y + window.scrollY,
                 viewportW: window.innerWidth, viewportH: window.innerHeight,
-                note: note,
+                note: text,
                 severity: selSev,
+                resolved: false,
                 timestamp: Date.now(),
                 screenshot: null
             };
-            _closePinPopover();
-            // Capture screenshot of region
-            var pad = 20;
-            var rr = { x: Math.max(0, rect.left - pad), y: Math.max(0, rect.top - pad),
-                       w: Math.min(window.innerWidth - rect.left + pad, rect.width + pad*2),
-                       h: Math.min(window.innerHeight - rect.top + pad, rect.height + pad*2) };
-            _captureRegion(rr, window.devicePixelRatio || 1, function (dataUrl) {
+            _captureElement(el).then(function (dataUrl) {
                 pin.screenshot = dataUrl;
                 _pins.push(pin);
-                _savePins();
+                _savePins(function () { _toast('Pin ' + _pinNumber(pin) + ' saved', 2000); });
                 _renderMarkers();
                 _refreshPanelBody();
-                _toast('📌 Pin #' + _pins.length + ' saved!', 2000);
             });
-        });
+        }
 
-        // Focus note textarea
-        setTimeout(function () { var ta = pop.querySelector('#__cx_pop_note'); if (ta) ta.focus(); }, 80);
+        setTimeout(function () { note.focus(); }, 60);
     }
 
     function _closePinPopover() {
         if (_popoverEl) { _popoverEl.remove(); _popoverEl = null; }
     }
 
-    function hexToRgb(hex) {
-        var r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return r ? parseInt(r[1],16)+','+parseInt(r[2],16)+','+parseInt(r[3],16) : '255,255,255';
-    }
-
-    // ── PDF Export (beautiful HTML → Print) ──────────────────────────
+    // ── Export ────────────────────────────────────────────────────────
+    // The report is an extension page that reads the pins from storage, so
+    // the site's Content-Security-Policy can't break it and its Save as PDF
+    // button always works.
     function _exportFeedback() {
-        if (_pins.length === 0) { _toast('No pins to export!'); return; }
-        var bugs = _pins.filter(function(p){ return p.severity==='bug'; }).length;
-        var suggs = _pins.filter(function(p){ return p.severity==='suggestion'; }).length;
-        var qs = _pins.filter(function(p){ return p.severity==='question'; }).length;
-        var infos = _pins.filter(function(p){ return p.severity==='info'; }).length;
-        var domain = location.hostname;
-        var exportDate = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
-
-        var pinsHtml = _pins.map(function (pin, i) {
-            var sv = _severityMeta(pin.severity);
-            var bp = _breakpoint(pin.viewportW);
-            var dateStr = new Date(pin.timestamp).toLocaleString();
-            return `
-            <div class="pin-section" style="page-break-inside:avoid;">
-                <div class="pin-header">
-                    <div class="pin-number" style="background:${sv.color}">${i+1}</div>
-                    <div class="pin-header-info">
-                        <span class="severity-badge" style="background:${sv.bg};color:${sv.color};border:1.5px solid ${sv.color}55;">${sv.icon} ${sv.label}</span>
-                        <span class="bp-badge">${bp.icon} ${bp.label} — ${pin.viewportW}×${pin.viewportH}px</span>
-                    </div>
-                </div>
-                ${pin.screenshot ? `<div class="screenshot-wrap"><img class="screenshot" src="${pin.screenshot}" alt="Element screenshot"></div>` : ''}
-                <div class="note-box">
-                    <div class="note-label">📝 Feedback Note</div>
-                    <div class="note-text">${_esc(pin.note)}</div>
-                </div>
-                <div class="pin-details">
-                    <div class="detail-row"><span class="detail-key">Element</span><code class="detail-val">${_esc(pin.selector)}</code></div>
-                    <div class="detail-row"><span class="detail-key">Position</span><code class="detail-val">x:${Math.round(pin.x)} y:${Math.round(pin.y)}</code></div>
-                    <div class="detail-row"><span class="detail-key">Viewport</span><code class="detail-val">${pin.viewportW}×${pin.viewportH}px (${bp.label})</code></div>
-                    <div class="detail-row"><span class="detail-key">Page URL</span><code class="detail-val url">${_esc(pin.url)}</code></div>
-                    <div class="detail-row"><span class="detail-key">Captured</span><code class="detail-val">${dateStr}</code></div>
-                </div>
-            </div>`;
-        }).join('<div class="pin-divider"></div>');
-
-        var html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Feedback Report — ${_esc(domain)}</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Inter', -apple-system, sans-serif; font-size: 14px; color: #1a202c; background: #f7f8fc; line-height: 1.6; }
-
-    @media print {
-        body { background: #fff; }
-        .cover { page-break-after: always; }
-        .no-print { display: none !important; }
-        @page { margin: 20mm 15mm; }
+        var list = _visiblePins();
+        if (!list.length) { _toast('No pins to export'); return; }
+        chrome.runtime.sendMessage({ action: 'OPEN_FEEDBACK_REPORT', key: STORAGE_KEY, page: _scope === 'page' ? _thisPage : '' }, function (res) {
+            if (chrome.runtime.lastError || !res || !res.ok) _toast('Could not open the report', 3000);
+        });
     }
 
-    /* Cover Page */
-    .cover {
-        min-height: 100vh; display: flex; flex-direction: column; justify-content: center;
-        background: linear-gradient(145deg, #0f0c29, #302b63, #24243e);
-        color: #fff; padding: 60px 80px; position: relative; overflow: hidden;
-    }
-    .cover::before {
-        content:''; position:absolute; inset:0;
-        background: radial-gradient(ellipse at 20% 50%, rgba(159,122,234,0.15) 0%, transparent 60%),
-                    radial-gradient(ellipse at 80% 20%, rgba(79,209,197,0.12) 0%, transparent 50%);
-    }
-    .cover-content { position:relative; z-index:1; }
-    .cover-badge { display:inline-block; background:rgba(79,209,197,0.15); color:#4fd1c5;
-        border:1px solid rgba(79,209,197,0.3); border-radius:6px; padding:4px 12px;
-        font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; margin-bottom:24px; }
-    .cover-title { font-size:42px; font-weight:800; line-height:1.15; margin-bottom:10px;
-        background:linear-gradient(135deg,#fff 60%,rgba(255,255,255,0.7));
-        -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
-    .cover-url { font-size:16px; color:rgba(255,255,255,0.55); margin-bottom:36px; font-weight:400; }
-    .cover-meta { display:flex; gap:40px; margin-bottom:48px; }
-    .cover-meta-item { }
-    .cover-meta-num { font-size:36px; font-weight:800; color:#4fd1c5; line-height:1; }
-    .cover-meta-label { font-size:11px; color:rgba(255,255,255,0.45); text-transform:uppercase; letter-spacing:0.8px; margin-top:4px; }
-    .cover-date { font-size:13px; color:rgba(255,255,255,0.35); }
-    .cover-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:36px; max-width:480px; }
-    .cover-stat { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); border-radius:12px; padding:16px 14px; text-align:center; }
-    .cover-stat-num { font-size:28px; font-weight:800; }
-    .cover-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:0.7px; margin-top:4px; opacity:0.55; }
-
-    /* Content */
-    .content { max-width: 820px; margin: 0 auto; padding: 48px 40px; }
-    .section-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1.5px;
-        color:#9F7AEA; margin-bottom:28px; padding-bottom:10px; border-bottom:2px solid #e2e8f0; }
-
-    /* Pin sections */
-    .pin-section { background:#fff; border-radius:16px; padding:28px;
-        box-shadow:0 2px 12px rgba(0,0,0,0.06); margin-bottom:28px;
-        border:1px solid #e8ecf0; }
-    .pin-header { display:flex; align-items:center; gap:14px; margin-bottom:18px; }
-    .pin-number { width:36px; height:36px; border-radius:50%; display:flex; align-items:center;
-        justify-content:center; font-size:14px; font-weight:800; color:#000; flex-shrink:0; }
-    .pin-header-info { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .severity-badge { display:inline-flex; align-items:center; gap:5px; padding:4px 11px;
-        border-radius:6px; font-size:11px; font-weight:700; }
-    .bp-badge { background:#f0f4ff; color:#4a5568; border:1px solid #dde3ef;
-        border-radius:6px; padding:4px 10px; font-size:11px; font-weight:600; }
-
-    /* Screenshot */
-    .screenshot-wrap { margin-bottom:20px; border-radius:10px; overflow:hidden;
-        border:1px solid #e2e8f0; box-shadow:0 4px 20px rgba(0,0,0,0.08); }
-    .screenshot { display:block; width:100%; height:auto; max-height:300px; object-fit:contain; background:#f8fafc; }
-
-    /* Note */
-    .note-box { background:#f8f9ff; border-left:4px solid #9F7AEA; border-radius:0 10px 10px 0;
-        padding:16px 18px; margin-bottom:16px; }
-    .note-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.8px;
-        color:#9F7AEA; margin-bottom:6px; }
-    .note-text { font-size:14px; color:#2d3748; line-height:1.65; font-weight:400; }
-
-    /* Details table */
-    .pin-details { display:flex; flex-direction:column; gap:6px; }
-    .detail-row { display:flex; gap:12px; align-items:baseline; font-size:12px; }
-    .detail-key { color:#718096; font-weight:600; min-width:70px; flex-shrink:0; }
-    .detail-val { font-family:'JetBrains Mono',monospace; color:#4a5568; font-size:11px;
-        background:#f7fafc; padding:2px 7px; border-radius:4px; border:1px solid #e2e8f0; word-break:break-all; }
-    .detail-val.url { color:#667eea; }
-    .pin-divider { height:1px; background:transparent; margin-bottom:28px; }
-
-    /* No-print print button */
-    .print-bar { position:fixed; top:0; left:0; right:0; background:rgba(10,11,16,0.95);
-        padding:12px 32px; display:flex; gap:12px; align-items:center; z-index:999;
-        backdrop-filter:blur(12px); box-shadow:0 4px 20px rgba(0,0,0,0.4); }
-    .print-btn { background:linear-gradient(135deg,#4FD1C5,#38b2ac); color:#071515;
-        border:none; padding:9px 22px; border-radius:8px; font-weight:800; font-size:13px;
-        cursor:pointer; font-family:'Inter',sans-serif; }
-    .print-btn:hover { opacity:0.88; }
-    .print-title { color:#fff; font-weight:600; font-size:14px; flex:1; }
-    .print-hint { color:#94a3b8; font-size:12px; }
-    .cover { padding-top: 80px; }
-</style>
-</head>
-<body>
-<div class="print-bar no-print">
-    <div class="print-title">📄 Feedback Report — ${_esc(domain)}</div>
-    <div class="print-hint">File → Print → Save as PDF</div>
-    <button class="print-btn" onclick="window.print()">🖨 Save as PDF</button>
-</div>
-
-<!-- Cover Page -->
-<div class="cover">
-    <div class="cover-content">
-        <div class="cover-badge">Codex Dev · Feedback Report</div>
-        <div class="cover-title">Design &amp; UX<br>Feedback Report</div>
-        <div class="cover-url">🌐 ${_esc(domain)}</div>
-        <div class="cover-meta">
-            <div class="cover-meta-item">
-                <div class="cover-meta-num">${_pins.length}</div>
-                <div class="cover-meta-label">Total Annotations</div>
-            </div>
-            <div class="cover-meta-item">
-                <div class="cover-meta-num">${new Set(_pins.map(function(p){return p.viewportW;})).size}</div>
-                <div class="cover-meta-label">Breakpoints</div>
-            </div>
-        </div>
-        <div class="cover-grid">
-            <div class="cover-stat"><div class="cover-stat-num" style="color:#fc8181">${bugs}</div><div class="cover-stat-label">Bugs</div></div>
-            <div class="cover-stat"><div class="cover-stat-num" style="color:#f6ad55">${suggs}</div><div class="cover-stat-label">Suggestions</div></div>
-            <div class="cover-stat"><div class="cover-stat-num" style="color:#63b3ed">${qs}</div><div class="cover-stat-label">Questions</div></div>
-            <div class="cover-stat"><div class="cover-stat-num" style="color:#68d391">${infos}</div><div class="cover-stat-label">Info</div></div>
-        </div>
-        <div class="cover-date" style="margin-top:28px;">Generated on ${exportDate}</div>
-    </div>
-</div>
-
-<!-- Annotations -->
-<div class="content">
-    <div class="section-title">Annotated Feedback — ${_pins.length} item${_pins.length !== 1 ? 's' : ''}</div>
-    ${pinsHtml}
-</div>
-</body>
-</html>`;
-
-        var blob = new Blob([html], { type: 'text/html' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url; a.target = '_blank'; a.rel = 'noopener';
-        a.click();
-        setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-        _toast('📄 Report opened — use File → Print → Save as PDF', 4000);
+    function _copyMarkdown() {
+        var list = _visiblePins();
+        var lines = ['## Feedback: ' + (_scope === 'page' ? document.title || location.href : location.hostname), ''];
+        var lastPage = null;
+        list.forEach(function (pin) {
+            if (_scope === 'all' && pin.page !== lastPage) { lastPage = pin.page; lines.push('### ' + pin.page, ''); }
+            var sv = _severityMeta(pin.severity), bp = _breakpoint(pin.viewportW);
+            lines.push('- [' + (pin.resolved ? 'x' : ' ') + '] **' + _pinNumber(pin) + '. ' + sv.label + ':** ' + pin.note.replace(/\n+/g, ' '));
+            lines.push('  - Element: `' + pin.selector + '` · ' + bp.label + ' ' + pin.viewportW + '×' + pin.viewportH + 'px');
+        });
+        if (_scope === 'page') lines.push('', 'Page: ' + location.href);
+        navigator.clipboard.writeText(lines.join('\n'))
+            .then(function () { _toast('Copied ' + list.length + ' pin' + (list.length !== 1 ? 's' : '') + ' as Markdown'); })
+            .catch(function () { _toast('Copy failed'); });
     }
 
     // ── Boot ──────────────────────────────────────────────────────────
+    var _closed = false;
+    function _teardownAll() {
+        _closed = true;
+        document.removeEventListener('click', _onDocClick, true);
+        if (_uiTeardown) _uiTeardown();
+        if (window.__codexFeedbackTeardown === _teardownAll) window.__codexFeedbackTeardown = null;
+    }
+    // Registered before loading so a toggle-off meanwhile still cleans up
+    window.__codexFeedbackTeardown = _teardownAll;
     _loadPins(function (stored) {
+        if (_closed) return;
         _pins = stored;
         _buildPanel();
         _renderMarkers();
-        _toast('📌 Feedback tool ready! Enable Pin Mode to start annotating.');
+        var here = _pagePins().length;
+        _toast(here ? here + ' pin' + (here !== 1 ? 's' : '') + ' on this page' : 'Feedback ready. Enable Pin Mode to start annotating');
     });
 })();

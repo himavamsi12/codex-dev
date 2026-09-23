@@ -1,8 +1,44 @@
 // Populate device lists on popup load
 document.addEventListener('DOMContentLoaded', () => {
+    CodexIcons.hydrate();
     populateDeviceLists();
     attachEventListeners();
+    setupTopLevelTabs();
+    setupDeviceCategoryTabs();
 });
+
+// Top-level "Tools" / "Launch Viewer" tabs
+function setupTopLevelTabs() {
+    const tabs = document.querySelectorAll('.popup-tab');
+    const views = document.querySelectorAll('.popup-view');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            tabs.forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
+            views.forEach(v => v.classList.remove('active'));
+            tab.classList.add('active');
+            tab.setAttribute('aria-selected', 'true');
+            document.getElementById('view-' + tab.dataset.view).classList.add('active');
+        });
+    });
+}
+
+// Mobile / Tablet / Desktop device-list switcher inside the Launch Viewer view
+function setupDeviceCategoryTabs() {
+    const tabs = document.querySelectorAll('.device-cat-tab');
+    const panels = document.querySelectorAll('.device-list');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            tabs.forEach(t => t.classList.remove('active'));
+            panels.forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            const panel = document.querySelector(`.device-list[data-cat-panel="${tab.dataset.cat}"]`);
+            if (panel) panel.classList.add('active');
+        });
+    });
+    // Default: mobile panel visible on load
+    const defaultPanel = document.querySelector('.device-list[data-cat-panel="mobile"]');
+    if (defaultPanel) defaultPanel.classList.add('active');
+}
 
 // Populate device lists by category
 function populateDeviceLists() {
@@ -12,9 +48,17 @@ function populateDeviceLists() {
         const container = document.getElementById(`${category}-devices`);
         const devices = getDevicesByCategory(category);
 
+        let lastBrand = null;
         devices.forEach((device, index) => {
-            const deviceElement = createDeviceElement(device, index);
-            container.appendChild(deviceElement);
+            // Group long lists by brand (catalog order is already grouped)
+            if (category !== 'desktop' && device.brand && device.brand !== lastBrand) {
+                const label = document.createElement('div');
+                label.className = 'device-group-label';
+                label.textContent = device.brand === 'apple' ? 'Apple' : category === 'tablet' ? 'Android and Windows' : 'Android';
+                container.appendChild(label);
+                lastBrand = device.brand;
+            }
+            container.appendChild(createDeviceElement(device, index));
         });
     });
 }
@@ -29,7 +73,7 @@ function createDeviceElement(device, index) {
     div.innerHTML = `
     <div class="device-info">
       <div class="device-name">${device.name}</div>
-      <div class="device-dimensions">${device.width} × ${device.height}</div>
+      <div class="device-dimensions">${device.width}×${device.height}</div>
     </div>
     <div class="device-icon">${device.icon}</div>
   `;
@@ -65,18 +109,48 @@ function attachEventListeners() {
                 width: width,
                 height: height,
                 category: 'custom',
-                category: 'custom',
-                icon: '<svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>'
+                icon: CodexIcons.svg('adjustments-horizontal', 24)
             };
             launchViewer([customDevice]);
         } else {
-            alert('Please enter valid dimensions (minimum 320px)');
+            showCustomError(true);
         }
     });
 
-    // Allow Enter key in custom inputs
-    document.getElementById('custom-width').addEventListener('keypress', handleEnterKey);
-    document.getElementById('custom-height').addEventListener('keypress', handleEnterKey);
+    // Allow Enter key in custom inputs; clear the error as soon as the user edits
+    ['custom-width', 'custom-height'].forEach(id => {
+        const input = document.getElementById(id);
+        input.addEventListener('keypress', handleEnterKey);
+        input.addEventListener('input', () => showCustomError(false));
+    });
+
+    // Every on-demand tool shares one design-token/toast library. Inject it
+    // first (idempotent — guarded by `if (window.CodexUI) return` inside the
+    // file itself) so the tool script can call window.CodexUI.* immediately.
+    function withSharedUI(tabId, opts, cb) {
+        chrome.scripting.executeScript({
+            target: { tabId, allFrames: !!opts.allFrames, },
+            files: ['utils/icons.js', 'utils/codex-ui.js']
+        }, () => { if (chrome.runtime.lastError) console.warn('codex-ui inject:', chrome.runtime.lastError.message); cb(); });
+    }
+
+    // Design Inspector (vendor/inspector) — injected by background.js so the
+    // keyboard shortcut and the popup share one code path.
+    const inspectorBtn = document.getElementById('toggle-inspector');
+    if (inspectorBtn) {
+        inspectorBtn.addEventListener('click', () => {
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                const tab = tabs[0];
+                if (!tab) return;
+                chrome.runtime.sendMessage({ action: 'TOGGLE_INSPECTOR', tabId: tab.id }, res => {
+                    if (res && res.ok) { window.close(); return; }
+                    const status = document.getElementById('tools-status');
+                    status.textContent = (res && res.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'Could not open the inspector on this page.';
+                    status.hidden = false;
+                });
+            });
+        });
+    }
 
     // CSS Viewer Toggle
     const cssViewerBtn = document.getElementById('toggle-css-viewer');
@@ -85,11 +159,13 @@ function attachEventListeners() {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 const tab = tabs[0];
                 if (tab) {
-                    chrome.scripting.executeScript({
-                        target: { tabId: tab.id },
-                        files: ['css-viewer.js']
+                    withSharedUI(tab.id, {}, () => {
+                        chrome.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            files: ['css-viewer.js']
+                        });
+                        window.close(); // Close popup
                     });
-                    window.close(); // Close popup
                 }
             });
         });
@@ -102,16 +178,18 @@ function attachEventListeners() {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 const tab = tabs[0];
                 if (tab) {
-                    // Inject JSZip first, then the extractor script. Wait for completion to close.
+                    // Inject JSZip + shared UI, then the extractor script. Wait for completion to close.
                     chrome.scripting.executeScript({
                         target: { tabId: tab.id, allFrames: true },
                         files: ['jszip.min.js']
                     }, () => {
-                        chrome.scripting.executeScript({
-                            target: { tabId: tab.id, allFrames: true },
-                            files: ['asset-extractor.js']
-                        }, () => {
-                            window.close(); // Close popup only AFTER script finishes injecting
+                        withSharedUI(tab.id, { allFrames: true }, () => {
+                            chrome.scripting.executeScript({
+                                target: { tabId: tab.id, allFrames: true },
+                                files: ['asset-extractor.js']
+                            }, () => {
+                                window.close(); // Close popup only AFTER script finishes injecting
+                            });
                         });
                     });
                 }
@@ -126,13 +204,15 @@ function attachEventListeners() {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 const tab = tabs[0];
                 if (tab) {
-                    // Inject into MAIN world so document.querySelectorAll reads the live page DOM
-                    chrome.scripting.executeScript({
-                        target: { tabId: tab.id },
-                        files: ['seo-tools.js'],
-                        world: 'MAIN'
+                    // Isolated world: reads the same live DOM, and can reach the
+                    // background worker for the link checker
+                    withSharedUI(tab.id, {}, () => {
+                        chrome.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            files: ['seo-tools.js']
+                        });
+                        window.close(); // Close popup
                     });
-                    window.close(); // Close popup
                 }
             });
         });
@@ -153,69 +233,36 @@ function attachEventListeners() {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 const tab = tabs[0];
                 if (tab) {
-                    chrome.scripting.executeScript({
-                        target: { tabId: tab.id },
-                        files: ['feedback.js']
+                    withSharedUI(tab.id, {}, () => {
+                        chrome.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            files: ['feedback.js']
+                        });
+                        window.close();
                     });
-                    window.close();
                 }
             });
         });
     }
 }
 
-// ── Capture Panel (inline modal inside popup) ─────────────────────
+// ── Capture sheet (static markup in popup.html, toggled here) ─────
 function showCapturePanel() {
-    // Remove existing if open (toggle)
-    const existing = document.getElementById('capture-panel');
-    if (existing) { existing.remove(); return; }
+    const panel = document.getElementById('capture-panel');
+    const container = document.querySelector('.popup-container');
+    const close = () => { panel.hidden = true; container.classList.remove('sheet-open'); };
 
-    const panel = document.createElement('div');
-    panel.id = 'capture-panel';
-    panel.style.cssText = `
-        position:fixed; inset:0; background:rgba(8,9,14,0.96);
-        z-index:9999; display:flex; flex-direction:column;
-        font-family:'Outfit',system-ui,sans-serif; color:#e2e8f0;
-        padding:18px 16px; gap:10px; overflow-y:auto;
-    `;
+    // Toggle
+    if (!panel.hidden) { close(); return; }
+    panel.hidden = false;
+    container.classList.add('sheet-open');
+    setStatus('');
 
-    panel.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <div style="font-size:14px;font-weight:700;background:linear-gradient(135deg,#4FD1C5,#9F7AEA);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">
-                📸 Capture Screenshot
-            </div>
-            <button id="cap-close" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);color:#94a3b8;cursor:pointer;padding:3px 9px;border-radius:5px;font-size:12px;">✕</button>
-        </div>
+    if (panel.dataset.bound) return;
+    panel.dataset.bound = '1';
+    panel.remove = close; // existing handlers below call panel.remove() to dismiss
 
-        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4FD1C5;margin-bottom:2px;">Format</div>
-        <div style="display:flex;gap:6px;margin-bottom:8px;">
-            ${['PNG','JPEG','WEBP'].map(f => `<button class="fmt-btn" data-fmt="${f.toLowerCase()}" style="flex:1;padding:7px 4px;background:${f==='PNG'?'rgba(79,209,197,0.15)':'rgba(255,255,255,0.05)'};border:1px solid ${f==='PNG'?'#4FD1C5':'rgba(255,255,255,0.1)'};border-radius:7px;color:${f==='PNG'?'#4FD1C5':'#94a3b8'};font-size:11px;font-weight:700;cursor:pointer;">${f}</button>`).join('')}
-        </div>
-
-        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4FD1C5;margin-bottom:4px;">Capture Mode</div>
-
-        ${[
-            { id:'cap-visible',  icon:'🖥',  title:'Visible Part',     desc:'Capture what you see right now in the viewport' },
-            { id:'cap-fullpage', icon:'📄',  title:'Full Page',        desc:'Scroll and stitch the entire page into one image' },
-            { id:'cap-area',     icon:'⬛',  title:'Select Area',      desc:'Drag to select any region of the page' },
-            { id:'cap-element',  icon:'🖱',  title:'Select Element',   desc:'Click any element on the page to capture it' },
-        ].map(m => `
-            <button id="${m.id}" style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:10px;padding:12px 14px;cursor:pointer;text-align:left;transition:border-color 0.18s;width:100%;" onmouseover="this.style.borderColor='#4FD1C5'" onmouseout="this.style.borderColor='rgba(255,255,255,0.09)'">
-                <span style="font-size:22px;flex-shrink:0;">${m.icon}</span>
-                <div>
-                    <div style="font-weight:700;color:#fff;font-size:12.5px;margin-bottom:2px;">${m.title}</div>
-                    <div style="font-size:11px;color:#94a3b8;line-height:1.4;">${m.desc}</div>
-                </div>
-            </button>
-        `).join('')}
-
-        <div id="cap-status" style="font-size:11px;color:#4FD1C5;text-align:center;min-height:16px;margin-top:4px;"></div>
-    `;
-
-    document.body.appendChild(panel);
-
-    // Close
-    document.getElementById('cap-close').addEventListener('click', () => panel.remove());
+    document.getElementById('cap-close').addEventListener('click', close);
 
     // Format selector
     let selectedFormat = 'png';
@@ -223,19 +270,17 @@ function showCapturePanel() {
         btn.addEventListener('click', () => {
             selectedFormat = btn.dataset.fmt;
             panel.querySelectorAll('.fmt-btn').forEach(b => {
-                b.style.background = 'rgba(255,255,255,0.05)';
-                b.style.borderColor = 'rgba(255,255,255,0.1)';
-                b.style.color = '#94a3b8';
+                b.classList.toggle('active', b === btn);
+                b.setAttribute('aria-checked', String(b === btn));
             });
-            btn.style.background = 'rgba(79,209,197,0.15)';
-            btn.style.borderColor = '#4FD1C5';
-            btn.style.color = '#4FD1C5';
         });
     });
 
-    function setStatus(msg) {
+    function setStatus(msg, isError) {
         const s = document.getElementById('cap-status');
-        if (s) s.textContent = msg;
+        if (!s) return;
+        s.textContent = msg;
+        s.classList.toggle('is-error', !!isError);
     }
 
     function withActiveTab(cb) {
@@ -247,18 +292,23 @@ function showCapturePanel() {
     // Ensure capture.js is injected in ISOLATED world so it can listen to background messages
     function ensureCaptureScript(tabId, cb) {
         chrome.scripting.executeScript(
-            { target: { tabId }, files: ['capture.js'] },
-            () => { if (chrome.runtime.lastError) console.warn('capture.js inject:', chrome.runtime.lastError.message); cb(); }
+            { target: { tabId }, files: ['utils/icons.js', 'utils/codex-ui.js'] },
+            () => {
+                chrome.scripting.executeScript(
+                    { target: { tabId }, files: ['capture.js'] },
+                    () => { if (chrome.runtime.lastError) console.warn('capture.js inject:', chrome.runtime.lastError.message); cb(); }
+                );
+            }
         );
     }
 
     // ── Visible ──
     document.getElementById('cap-visible').addEventListener('click', () => {
-        setStatus('Capturing viewport…');
+        setStatus('Capturing viewport...');
         withActiveTab(tab => {
             chrome.runtime.sendMessage({ action: 'CAPTURE_VISIBLE', format: selectedFormat }, res => {
-                if (res && res.ok) { setStatus('✓ Saved to Downloads!'); setTimeout(() => panel.remove(), 1500); }
-                else setStatus('Error: ' + (res && res.error || 'Unknown'));
+                if (res && res.ok) { setStatus('Saved to Downloads'); setTimeout(() => panel.remove(), 1500); }
+                else setStatus('Error: ' + (res && res.error || 'Unknown'), true);
             });
         });
     });
@@ -270,7 +320,7 @@ function showCapturePanel() {
         // Background handles the download autonomously; no response needed
         chrome.runtime.sendMessage({ action: 'CAPTURE_FULL_PAGE', format: selectedFormat });
         // Show brief status then close popup so the message port stays open in the background
-        setStatus('📄 Full page capture started… check Downloads!');
+        setStatus('Full page capture started. Check Downloads.');
         setTimeout(() => { try { window.close(); } catch(e) { panel.remove(); } }, 1200);
     });
 
@@ -295,6 +345,14 @@ function showCapturePanel() {
                 window.close();
             });
         });
+    });
+}
+
+function showCustomError(show) {
+    document.getElementById('custom-error').hidden = !show;
+    ['custom-width', 'custom-height'].forEach(id => {
+        const input = document.getElementById(id);
+        if (show) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
     });
 }
 

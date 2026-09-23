@@ -20,32 +20,14 @@ class DesignTools {
         gridBtn.className = 'control-btn';
         gridBtn.id = 'toggle-grid';
         gridBtn.title = 'Toggle Grid Overlay';
-        gridBtn.innerHTML = `
-            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                <line x1="3" y1="9" x2="21" y2="9"></line>
-                <line x1="3" y1="15" x2="21" y2="15"></line>
-                <line x1="9" y1="3" x2="9" y2="21"></line>
-                <line x1="15" y1="3" x2="15" y2="21"></line>
-            </svg>
-        `;
+        gridBtn.innerHTML = CodexIcons.svg('layout-grid', 18);
 
         // Ruler Button
         const rulerBtn = document.createElement('button');
         rulerBtn.className = 'control-btn';
         rulerBtn.id = 'toggle-ruler';
         rulerBtn.title = 'Toggle Ruler';
-        rulerBtn.innerHTML = `
-            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 6H3"></path>
-                <path d="M21 12H3"></path>
-                <path d="M21 18H3"></path>
-                <path d="M5 6v12"></path>
-                <path d="M9 6v12"></path>
-                <path d="M13 6v12"></path>
-                <path d="M17 6v12"></path>
-            </svg>
-        `;
+        rulerBtn.innerHTML = CodexIcons.svg('ruler-measure', 18);
 
         headerRight.appendChild(gridBtn);
         headerRight.appendChild(rulerBtn);

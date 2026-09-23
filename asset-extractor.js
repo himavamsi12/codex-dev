@@ -129,9 +129,58 @@
             } catch (e) { /* Ignore CORS or security errors on style access */ }
         });
 
-        // 5. Embedded SVGs and <use> tags
+        // 5. Lottie animations. The file is JSON (or a zipped .lottie); the
+        // <svg> the player draws is just the current frame. Collect likely
+        // sources here; the top frame downloads and validates them.
+        const LOTTIE_FILE = /\.(json|lottie)(?:[?#]|$)/i;
+        function addLottie(value, trusted) {
+            if (!value) return;
+            value = value.trim();
+            if (value.charAt(0) === '{') {
+                // Inline animation JSON (e.g. <lottie-player src='{...}'>)
+                const key = 'lottie-inline:' + value.length + ':' + value.slice(0, 64);
+                if (!assets.has(key)) assets.set(key, { url: key, type: 'lottie', format: 'json', inlineJson: value, frameUrl: window.location.href, id: `asset-${Date.now()}-${assetCount++}` });
+                return;
+            }
+            let url;
+            try { url = new URL(value, window.location.href).href; } catch (e) { return; }
+            if (!/^https?:/.test(url) || (!trusted && !LOTTIE_FILE.test(url))) return;
+            const key = 'lottie:' + url;
+            if (!assets.has(key)) {
+                assets.set(key, {
+                    url: url, type: 'lottie', format: /\.lottie(?:[?#]|$)/i.test(url) ? 'lottie' : 'json',
+                    frameUrl: window.location.href, id: `asset-${Date.now()}-${assetCount++}`
+                });
+            }
+        }
+        document.querySelectorAll('lottie-player[src], dotlottie-player[src], dotlottie-wc[src], lottie-interactive[path]').forEach(el => {
+            addLottie(el.getAttribute('src') || el.getAttribute('path'), true);
+        });
+        // Webflow, and common data-attribute conventions
+        document.querySelectorAll('[data-animation-type="lottie"][data-src], [data-lottie-src], [data-lottie-path], [data-animation-path], [data-lottie], [data-anim-path]').forEach(el => {
+            ['data-src', 'data-lottie-src', 'data-lottie-path', 'data-animation-path', 'data-lottie', 'data-anim-path'].forEach(attr => {
+                const v = el.getAttribute(attr);
+                if (v) addLottie(v, attr !== 'data-lottie' || /[./]/.test(v));
+            });
+        });
+        // Files the page has already downloaded (lottie-web loads by XHR)
+        try {
+            performance.getEntriesByType('resource').forEach(entry => {
+                if (LOTTIE_FILE.test(entry.name) && !/manifest\.json|\/wp-json\/|\/api\//i.test(entry.name)) addLottie(entry.name, false);
+            });
+        } catch (e) { }
+
+        // Rendered by a Lottie player (lottie-web ids its defs __lottie_element_N)
+        const isLottieSvg = svg => !!svg.querySelector('[id^="__lottie_element"]') ||
+            !!(svg.parentElement && svg.parentElement.closest('lottie-player, dotlottie-player, dotlottie-wc, [data-animation-type="lottie"]'));
+
+        // 6. Embedded SVGs and <use> tags
         document.querySelectorAll('svg').forEach(svg => {
             try {
+                // A frame of a Lottie animation, not a real SVG asset. Keep it
+                // only as a fallback preview in case the source can't be found.
+                const lottieFrame = isLottieSvg(svg);
+                if (lottieFrame && svg.parentElement && svg.parentElement.closest('svg')) return;
                 // If it has no width/height and isn't a sprite master, skip
                 const rect = svg.getBoundingClientRect();
                 if (rect.width === 0 && rect.height === 0 && svg.children.length === 0) return;
@@ -155,6 +204,14 @@
                     source = source.replace(/^<svg/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
                 }
                 const encodedUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
+
+                if (lottieFrame) {
+                    assets.set('lottie-frame:' + assetCount, {
+                        url: encodedUrl, type: 'lottie', format: 'svg', unresolved: true, isDataUri: true,
+                        frameUrl: window.location.href, id: `asset-${Date.now()}-${assetCount++}`
+                    });
+                    return;
+                }
 
                 assets.set(encodedUrl, {
                     url: encodedUrl,
@@ -188,16 +245,24 @@
     if (window.CodexAssetExtractorActive) {
         // Toggle OFF
         window.CodexAssetExtractorActive = false;
+        if (window.__codexAssetMessageHandler) {
+            window.removeEventListener('message', window.__codexAssetMessageHandler);
+            window.__codexAssetMessageHandler = null;
+        }
         const host = document.getElementById(HOST_ID);
         if (host) host.remove();
+        // Stop the Lottie previews (this world's player only, not the page's)
+        try { if (globalThis.lottie && globalThis.lottie.destroy) globalThis.lottie.destroy(); } catch (e) { }
         return;
     }
 
     window.CodexAssetExtractorActive = true;
     let allDiscoveredAssets = [...localAssets];
 
-    // Listen for iframe assets
-    window.addEventListener('message', function (event) {
+    // Listen for iframe assets — stored on window so the toggle-OFF branch
+    // above (which runs on the *next* fresh injection of this script) can
+    // remove the exact same listener reference instead of leaking it.
+    window.__codexAssetMessageHandler = function (event) {
         if (event.data && event.data.type === 'CODEX_ASSETS_FOUND') {
             const newAssets = event.data.assets || [];
             // Merge deduplicate based on URL
@@ -210,8 +275,10 @@
             });
             renderAssetGrid();
             updateCounts();
+            resolveLotties();
         }
-    });
+    };
+    window.addEventListener('message', window.__codexAssetMessageHandler);
 
     const host = document.createElement('div');
     host.id = HOST_ID;
@@ -224,212 +291,277 @@
     document.body.appendChild(host);
 
     const shadow = host.attachShadow({ mode: 'open' });
+    const ic = (name, size) => window.CodexUI ? window.CodexUI.icon(name, size || 14) : '';
 
     const style = document.createElement('style');
     style.textContent = `
         :host {
-            --bg: #1a202c;
-            --bg-panel: #2d3748;
-            --border: #4a5568;
-            --text: #e2e8f0;
-            --text-muted: #a0aec0;
-            --accent: #4FD1C5;
-            font-family: system-ui, -apple-system, sans-serif;
+            --bg: #121316;
+            --bg-panel: #16171a;
+            --bg-inset: #1d1e22;
+            --border: rgba(255,255,255,0.08);
+            --border-strong: rgba(255,255,255,0.14);
+            --text: #ececef;
+            --text-muted: #9b9ca4;
+            --accent: #4fd1c5;
+            --accent-text: #5fd8cc;
+            --accent-soft: rgba(79,209,197,0.12);
+            --on-accent: #07201d;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
             color: var(--text);
-            font-size: 14px;
+            font-size: 13px;
             line-height: 1.5;
             box-sizing: border-box;
+            -webkit-font-smoothing: antialiased;
         }
 
-        :host * {
-            box-sizing: border-box;
-        }
-        
+        :host * { box-sizing: border-box; }
+        .cx-icon { flex-shrink: 0; display: inline-block; vertical-align: middle; }
+        button { font-family: inherit; }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
         .extractor-panel {
             position: fixed;
-            top: 20px;
-            right: 20px;
+            top: 12px;
+            right: 12px;
             width: 400px;
-            height: calc(100vh - 40px);
+            height: calc(100vh - 24px);
             background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            border: 1px solid var(--border-strong);
+            border-radius: 10px;
+            box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 24px 60px -16px rgba(0,0,0,0.7);
             display: flex;
             flex-direction: column;
             overflow: hidden;
             z-index: 10000;
+            animation: panelIn 0.35s cubic-bezier(0.16,1,0.3,1);
         }
+        @keyframes panelIn { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
 
         .header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 12px 16px;
-            background: var(--bg-panel);
+            height: 48px;
+            padding: 0 10px 0 14px;
             border-bottom: 1px solid var(--border);
         }
 
         .header-title {
-            font-weight: 600;
-            font-size: 14px;
-            color: #fff;
+            font-weight: 650;
+            font-size: 13.5px;
             display: flex;
             align-items: center;
             gap: 8px;
         }
+        .header-title .cx-icon { color: var(--accent-text); }
 
         .close-btn {
+            width: 28px;
+            height: 28px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             background: none;
-            border: none;
+            border: 1px solid var(--border);
+            border-radius: 6px;
             color: var(--text-muted);
             cursor: pointer;
-            padding: 4px;
-            font-size: 16px;
+            transition: color 0.15s, background 0.15s;
         }
-        
-        .close-btn:hover { color: #fff; }
+        .close-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
 
         .toolbar {
-            padding: 12px 16px;
-            background: var(--bg-panel);
+            padding: 10px 14px;
             border-bottom: 1px solid var(--border);
             display: flex;
-            gap: 8px;
+            gap: 6px;
             flex-wrap: wrap;
         }
-        
+
         .filter-btn {
-            background: var(--bg);
+            background: none;
             border: 1px solid var(--border);
             color: var(--text-muted);
             padding: 4px 10px;
-            border-radius: 20px;
+            border-radius: 999px;
             font-size: 12px;
+            font-weight: 550;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
-        
+        .filter-btn:hover { color: var(--text); }
         .filter-btn.active {
-            background: rgba(79, 209, 197, 0.2);
-            color: var(--accent);
-            border-color: var(--accent);
+            background: var(--accent-soft);
+            color: var(--accent-text);
+            border-color: transparent;
         }
 
         .asset-grid {
             flex: 1;
             overflow-y: auto;
-            padding: 16px;
+            padding: 14px;
             display: grid;
             grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
+            gap: 10px;
             align-content: flex-start;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border-strong) transparent;
         }
 
         .asset-card {
             background: var(--bg-panel);
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 10px;
             overflow: hidden;
             display: flex;
             flex-direction: column;
             position: relative;
-            height: 200px;
+            height: 196px;
+            transition: border-color 0.15s;
         }
-        
+        .asset-card:hover { border-color: var(--border-strong); }
+
         .asset-preview {
             flex: 1;
-            background: #000;
+            min-height: 0;
             display: flex;
             align-items: center;
             justify-content: center;
             position: relative;
-            background-image: linear-gradient(45deg, #111 25%, transparent 25%), linear-gradient(-45deg, #111 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #111 75%), linear-gradient(-45deg, transparent 75%, #111 75%);
-            background-size: 20px 20px;
-            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            color: var(--text-muted);
+            background-color: #18191c;
+            background-image: linear-gradient(45deg, #202125 25%, transparent 25%), linear-gradient(-45deg, #202125 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #202125 75%), linear-gradient(-45deg, transparent 75%, #202125 75%);
+            background-size: 16px 16px;
+            background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
         }
-        
+
         .asset-preview img, .asset-preview video {
             max-width: 100%;
             max-height: 100%;
             object-fit: contain;
         }
-        
+
+        .preview-label { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px; }
+
         .asset-info {
-            padding: 8px;
-            font-size: 11px;
+            padding: 8px 10px;
+            font-size: 11.5px;
+            border-top: 1px solid var(--border);
         }
-        
+
         .asset-name {
-            color: #fff;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            margin-bottom: 4px;
+            margin-bottom: 2px;
+            font-weight: 500;
         }
-        
+
         .asset-meta {
             display: flex;
             justify-content: space-between;
+            align-items: center;
             color: var(--text-muted);
         }
-        
+        .asset-meta a { display: inline-flex; align-items: center; gap: 3px; color: var(--accent-text); text-decoration: none; }
+        .asset-meta a:hover { text-decoration: underline; }
+        .asset-actions { display: inline-flex; align-items: center; gap: 4px; }
+        .asset-actions a, .asset-dl {
+            display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+            height: 24px; padding: 0 7px; border-radius: 6px;
+            border: 1px solid var(--border); background: transparent;
+            color: var(--accent-text); font: inherit; font-size: 11.5px; font-weight: 600;
+            cursor: pointer; text-decoration: none; transition: background 0.15s, border-color 0.15s;
+        }
+        .asset-actions a { padding: 0 5px; }
+        .asset-actions a:hover, .asset-dl:hover { background: rgba(79,209,197,0.1); border-color: rgba(79,209,197,0.35); text-decoration: none; }
+        .asset-dl:disabled { opacity: 0.5; cursor: default; }
+        .badge.lottie { background: rgba(79,209,197,0.9); color: #07201d; font-weight: 600; }
+        .asset-preview > div { width: 100%; height: 100%; }
+        .lottie-card { height: 222px; }
+        .lottie-meta { font-size: 11px; }
+        .lottie-actions { display: flex; gap: 4px; margin-top: 6px; }
+        .lottie-actions .asset-dl { flex: 1 1 0; min-width: 0; padding: 0 4px; }
+        .lottie-actions:has(> :nth-child(3)) .cx-icon { display: none; }
+        .filter-btn .count { font-size: 10px; opacity: 0.75; margin-left: 2px; }
+        .filter-btn .spin { display: inline-block; width: 9px; height: 9px; margin-left: 4px; vertical-align: -1px;
+            border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cxspin 0.8s linear infinite; }
+        @keyframes cxspin { to { transform: rotate(360deg); } }
+
         .badge {
             position: absolute;
-            top: 4px;
-            right: 4px;
-            background: rgba(0,0,0,0.7);
-            color: #fff;
-            padding: 2px 6px;
-            border-radius: 4px;
+            top: 6px;
+            right: 6px;
+            background: rgba(14,15,17,0.8);
+            color: var(--text);
+            padding: 1px 6px;
+            border-radius: 999px;
+            font-family: 'SF Mono', ui-monospace, Menlo, monospace;
             font-size: 10px;
             text-transform: uppercase;
         }
 
+        .empty-state {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            padding: 48px 0;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
         .footer {
-            padding: 12px 16px;
-            background: var(--bg-panel);
+            padding: 10px 14px;
             border-top: 1px solid var(--border);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
-        
+
         .btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
             background: var(--accent);
-            color: #000;
+            color: var(--on-accent);
             border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
+            padding: 7px 14px;
+            border-radius: 6px;
+            font-size: 12.5px;
             font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: background 0.15s, transform 0.1s;
         }
-        
-        .btn-primary:hover { background: #3eb1a6; }
-        .btn-primary:disabled { background: #4a5568; color: #a0aec0; cursor: not-allowed; }
-        
+
+        .btn-primary:hover { background: #6adbd0; }
+        .btn-primary:active { transform: scale(0.97); }
+        .btn-primary:disabled { background: var(--bg-inset); color: var(--text-muted); cursor: not-allowed; }
+
         .status-text {
             font-size: 12px;
             color: var(--text-muted);
         }
-        
+
         /* Toast */
         .toast {
             position: absolute;
-            bottom: 70px;
+            bottom: 64px;
             left: 50%;
-            transform: translateX(-50%) translateY(20px);
-            background: var(--accent);
-            color: #000;
-            padding: 8px 16px;
-            border-radius: 20px;
+            transform: translateX(-50%) translateY(12px);
+            background: var(--bg-inset);
+            border: 1px solid var(--border-strong);
+            color: var(--text);
+            padding: 7px 14px;
+            border-radius: 10px;
             font-size: 12px;
-            font-weight: 600;
+            font-weight: 500;
             opacity: 0;
             pointer-events: none;
-            transition: all 0.3s;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            transition: all 0.3s cubic-bezier(0.16,1,0.3,1);
+            box-shadow: 0 12px 30px -10px rgba(0,0,0,0.6);
             white-space: nowrap;
         }
         .toast.show {
@@ -443,21 +575,15 @@
     panel.className = 'extractor-panel';
     panel.innerHTML = `
         <div class="header">
-            <div class="header-title">
-                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                    <polyline points="21 15 16 10 5 21"></polyline>
-                </svg>
-                Asset Extractor
-            </div>
-            <button class="close-btn" id="close-panel">✕</button>
+            <div class="header-title">${ic('photo', 16)}Asset Extractor</div>
+            <button class="close-btn" id="close-panel" aria-label="Close">${ic('x', 16)}</button>
         </div>
         
         <div class="toolbar" id="filters">
             <button class="filter-btn active" data-filter="all">All</button>
             <button class="filter-btn" data-filter="image">Images</button>
             <button class="filter-btn" data-filter="vector">Vectors (SVG)</button>
+            <button class="filter-btn" data-filter="lottie">Lottie</button>
             <button class="filter-btn" data-filter="video">Video/Audio</button>
             <button class="filter-btn" data-filter="font">Fonts</button>
         </div>
@@ -468,7 +594,7 @@
         
         <div class="footer">
             <div class="status-text" id="status-text">0 assets found</div>
-            <button class="btn-primary" id="save-all-btn">Save All (ZIP)</button>
+            <button class="btn-primary" id="save-all-btn">${ic('download', 14)}Save All (ZIP)</button>
         </div>
         <div class="toast" id="toast">Extracting...</div>
     `;
@@ -481,6 +607,7 @@
 
     // Close logic
     shadow.getElementById('close-panel').addEventListener('click', () => {
+        stopPreviews();
         window.CodexAssetExtractorActive = false;
         host.remove();
     });
@@ -493,10 +620,10 @@
 
     function updateSaveBtnLabel() {
         if (currentFilter === 'all') {
-            saveBtn.textContent = 'Save All Assets (ZIP)';
+            saveBtn.innerHTML = ic('download', 14) + 'Save All Assets (ZIP)';
         } else {
             const filterName = currentFilter.charAt(0).toUpperCase() + currentFilter.slice(1) + 's';
-            saveBtn.textContent = `Save ${filterName} (ZIP)`;
+            saveBtn.innerHTML = ic('download', 14) + `Save ${filterName} (ZIP)`;
         }
     }
 
@@ -516,24 +643,344 @@
             const pathname = new URL(url).pathname;
             const segments = pathname.split('/');
             let name = segments.pop() || 'asset';
+            try { name = decodeURIComponent(name); } catch (e) { }
             if (!name.includes('.')) name += '.' + (format || 'bin');
             return name;
         } catch (e) {
-            return `asset - ${Date.now()}.${format || 'bin'} `;
+            return `asset-${Date.now()}.${format || 'bin'}`;
         }
     }
 
-    function renderAssetGrid() {
-        const grid = shadow.getElementById('asset-grid');
-        grid.innerHTML = '';
+    // Download a single asset. Chrome's downloads API (in the background
+    // worker) fetches it, so assets on other domains work despite CORS;
+    // a page-side fetch is the fallback.
+    function downloadOne(asset, filename, btn) {
+        btn.disabled = true;
+        const done = (ok) => {
+            btn.disabled = false;
+            showToast(ok ? 'Downloading ' + filename : 'Could not download ' + filename, ok ? 1800 : 3000);
+        };
+        const fallback = async () => {
+            try {
+                const res = await fetch(asset.url, { credentials: 'omit' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const url = URL.createObjectURL(await res.blob());
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 5000);
+                done(true);
+            } catch (e) { done(false); }
+        };
+        try {
+            chrome.runtime.sendMessage({ action: 'DOWNLOAD_ASSET', url: asset.url, filename }, res => {
+                if (chrome.runtime.lastError || !res || !res.ok) fallback();
+                else done(true);
+            });
+        } catch (e) { fallback(); }
+    }
 
-        const filtered = allDiscoveredAssets.filter(a => {
+    // ---------------------------------------------------------
+    // Lottie: find, validate, preview and export animations
+    // ---------------------------------------------------------
+    const send = (msg) => new Promise(resolve => {
+        try {
+            chrome.runtime.sendMessage(msg, res => resolve(chrome.runtime.lastError ? null : res));
+        } catch (e) { resolve(null); }
+    });
+    const isLottieData = o => !!o && typeof o === 'object' && Array.isArray(o.layers) &&
+        typeof o.fr === 'number' && typeof o.op === 'number' && 'v' in o;
+    let lottieBusy = false, lottieRuntimeDone = false, lottieCounter = 0;
+    let playingAnims = [];
+
+    function lottieName(asset, data) {
+        let base = '';
+        if (asset.url && /^https?:/.test(asset.url)) {
+            try { base = decodeURIComponent(new URL(asset.url).pathname.split('/').pop() || '').replace(/\.(json|lottie)$/i, ''); } catch (e) { }
+        }
+        if (!base && data && typeof data.nm === 'string') base = data.nm;
+        base = (base || 'animation-' + (++lottieCounter)).replace(/[^\w.-]+/g, '_').slice(0, 80);
+        return base;
+    }
+
+    // Accept a parsed animation: record its details for the card
+    function acceptLottie(asset, data, jsonText) {
+        asset.state = 'ok';
+        asset.jsonText = jsonText || JSON.stringify(data);
+        asset.meta = {
+            w: data.w, h: data.h, fr: data.fr,
+            seconds: Math.max(0, (data.op - (data.ip || 0)) / (data.fr || 30)),
+            layers: data.layers.length
+        };
+        asset.baseName = asset.baseName || lottieName(asset, data);
+    }
+
+    async function unzipDotLottie(base64) {
+        if (!window.JSZip) throw new Error('JSZip missing');
+        const zip = await JSZip.loadAsync(base64, { base64: true });
+        let file = null;
+        try {
+            const manifest = JSON.parse(await zip.file('manifest.json').async('string'));
+            const id = manifest.animations && manifest.animations[0] && manifest.animations[0].id;
+            if (id) file = zip.file('animations/' + id + '.json');
+        } catch (e) { }
+        if (!file) file = zip.file(/^(animations\/)?[^/]+\.json$/i).filter(f => !/manifest\.json$/i.test(f.name))[0];
+        if (!file) throw new Error('No animation inside');
+        const data = JSON.parse(await file.async('string'));
+        // Embed images packed in the archive so the animation is self-contained
+        if (Array.isArray(data.assets)) {
+            for (const a of data.assets) {
+                if (!a.p || a.e === 1 || /^data:/.test(a.p)) continue;
+                const img = zip.file('images/' + a.p) || zip.file((a.u || '').replace(/^\//, '') + a.p);
+                if (!img) continue;
+                const ext = (a.p.split('.').pop() || 'png').toLowerCase();
+                a.p = 'data:image/' + (ext === 'jpg' ? 'jpeg' : ext) + ';base64,' + await img.async('base64');
+                a.u = ''; a.e = 1;
+            }
+        }
+        return data;
+    }
+
+    async function checkLottie(asset) {
+        asset.state = 'checking';
+        try {
+            if (asset.inlineJson) {
+                const data = JSON.parse(asset.inlineJson);
+                if (!isLottieData(data)) throw new Error('not lottie');
+                acceptLottie(asset, data, asset.inlineJson);
+                return;
+            }
+            const res = await send({ action: 'FETCH_LOTTIE', url: asset.url });
+            if (!res || !res.ok) throw new Error(res && res.error || 'fetch failed');
+            if (res.kind === 'zip') {
+                const data = await unzipDotLottie(res.base64);
+                if (!isLottieData(data)) throw new Error('not lottie');
+                asset.format = 'lottie';
+                asset.dotLottie = true;
+                acceptLottie(asset, data);
+            } else {
+                const data = JSON.parse(res.text);
+                if (!isLottieData(data)) throw new Error('not lottie');
+                acceptLottie(asset, data, res.text);
+            }
+        } catch (e) {
+            // Runtime copy (see below) is the fallback when the file itself can't be read
+            if (asset.runtimeJson) {
+                try { acceptLottie(asset, JSON.parse(asset.runtimeJson), asset.runtimeJson); asset.fromRuntimeOnly = true; return; } catch (err) { }
+            }
+            asset.state = 'bad';
+        }
+    }
+
+    // Animations already playing on the page, read from the page's own Lottie
+    // library. This also finds animations whose file isn't in the DOM.
+    async function collectRuntimeLotties() {
+        const res = await send({ action: 'GET_LOTTIE_RUNTIME' });
+        const found = (res && res.animations) || [];
+        const byUrl = new Map(allDiscoveredAssets.filter(a => a.type === 'lottie' && !a.unresolved).map(a => [a.url, a]));
+        found.forEach(anim => {
+            if (anim.path && byUrl.has(anim.path)) {
+                byUrl.get(anim.path).runtimeJson = anim.json;
+                return;
+            }
+            const url = anim.path || ('lottie-runtime:' + anim.json.length + ':' + (anim.name || ''));
+            if (byUrl.has(url)) return;
+            const asset = {
+                url, type: 'lottie', format: 'json', frameUrl: anim.frameUrl,
+                id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                runtimeJson: anim.json, baseName: anim.name ? String(anim.name).replace(/[^\w.-]+/g, '_').slice(0, 80) : ''
+            };
+            if (!anim.path) asset.inlineJson = anim.json;
+            allDiscoveredAssets.push(asset);
+            byUrl.set(url, asset);
+        });
+    }
+
+    async function resolveLotties() {
+        if (lottieBusy) { resolveLotties.again = true; return; }
+        lottieBusy = true;
+        setLottieStatus(true);
+        try {
+            if (!lottieRuntimeDone) { lottieRuntimeDone = true; await collectRuntimeLotties(); }
+            const queue = allDiscoveredAssets.filter(a => a.type === 'lottie' && !a.unresolved && !a.state);
+            let next = 0;
+            const worker = async () => { while (next < queue.length) await checkLottie(queue[next++]); };
+            await Promise.all([worker(), worker(), worker(), worker()]);
+            // Remove files that turned out not to be animations
+            allDiscoveredAssets = allDiscoveredAssets.filter(a => a.type !== 'lottie' || a.unresolved || a.state !== 'bad');
+        } finally {
+            lottieBusy = false;
+            setLottieStatus(false);
+            renderAssetGrid();
+            updateCounts();
+            if (resolveLotties.again) { resolveLotties.again = false; resolveLotties(); }
+        }
+    }
+
+    function setLottieStatus(busy) {
+        const btn = shadow.querySelector('.filter-btn[data-filter="lottie"]');
+        if (!btn) return;
+        const n = allDiscoveredAssets.filter(a => a.type === 'lottie' && a.state === 'ok').length;
+        btn.innerHTML = 'Lottie' + (busy ? ' <span class="spin"></span>' : n ? ' <span class="count">' + n + '</span>' : '');
+    }
+
+    // Load the Lottie player into this (isolated) world once, on demand
+    let lottieLib = null;
+    function ensureLottiePlayer() {
+        if (globalThis.lottie && globalThis.lottie.loadAnimation) return Promise.resolve(globalThis.lottie);
+        if (!lottieLib) {
+            lottieLib = send({ action: 'LOAD_LOTTIE_PLAYER' }).then(() => {
+                if (!globalThis.lottie) throw new Error('Lottie player failed to load');
+                return globalThis.lottie;
+            });
+            lottieLib.catch(() => { lottieLib = null; });
+        }
+        return lottieLib;
+    }
+
+    // External image paths inside the JSON are relative to the JSON file
+    function withAbsoluteImages(data, baseUrl) {
+        if (!Array.isArray(data.assets) || !/^https?:/.test(baseUrl || '')) return data;
+        data.assets.forEach(a => {
+            if (a.p && a.e !== 1 && !/^data:/.test(a.p)) {
+                try { a.u = new URL(a.u || '', baseUrl).href; } catch (e) { }
+            }
+        });
+        return data;
+    }
+
+    function stopPreviews() {
+        playingAnims.forEach(a => { try { a.destroy(); } catch (e) { } });
+        playingAnims = [];
+    }
+
+    function playPreview(asset, container) {
+        ensureLottiePlayer().then(lib => {
+            if (!container.isConnected) return;
+            container.textContent = '';
+            const anim = lib.loadAnimation({
+                container, renderer: 'svg', loop: true, autoplay: true,
+                animationData: withAbsoluteImages(JSON.parse(asset.jsonText), asset.url),
+                rendererSettings: { preserveAspectRatio: 'xMidYMid meet', progressiveLoad: true }
+            });
+            playingAnims.push(anim);
+        }).catch(() => {
+            container.innerHTML = '<div class="preview-label">' + ic('photo-off', 22) + 'No preview</div>';
+        });
+    }
+
+    function saveBlob(text, filename, type) {
+        const url = URL.createObjectURL(new Blob([text], { type }));
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        showToast('Downloading ' + filename, 1800);
+    }
+
+    // A standalone page that plays the animation (player library included)
+    async function saveLottieHtml(asset) {
+        const res = await send({ action: 'GET_LOTTIE_LIB' });
+        if (!res || !res.text) { showToast('Could not build the player file', 3000); return; }
+        const data = withAbsoluteImages(JSON.parse(asset.jsonText), asset.url);
+        const json = JSON.stringify(data).replace(/</g, '\\u003c');
+        const m = asset.meta;
+        const html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n' +
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
+            '<title>' + asset.baseName.replace(/[<&]/g, '') + '</title>\n' +
+            '<style>html,body{margin:0;height:100%;background:#fff}body{display:grid;place-items:center}' +
+            '#anim{width:min(100vw,' + (m.w || 800) + 'px);max-height:100vh;aspect-ratio:' + (m.w || 1) + '/' + (m.h || 1) + '}</style>\n' +
+            '</head>\n<body>\n<div id="anim"></div>\n' +
+            '<script>' + res.text.replace(/<\/script/gi, '<\\/script') + '<\/script>\n' +
+            '<script>lottie.loadAnimation({container:document.getElementById("anim"),renderer:"svg",loop:true,autoplay:true,animationData:' + json + '});<\/script>\n' +
+            '</body>\n</html>\n';
+        saveBlob(html, asset.baseName + '.html', 'text/html');
+    }
+
+    function saveLottieJson(asset) {
+        const filename = asset.baseName + '.json';
+        // The original file when there is one (exactly as the site serves it)
+        if (/^https?:/.test(asset.url) && !asset.dotLottie && asset.state === 'ok' && !asset.fromRuntimeOnly) {
+            downloadOne(asset, filename, { disabled: false });
+        } else {
+            saveBlob(asset.jsonText, filename, 'application/json');
+        }
+    }
+
+    function renderLottieCard(asset) {
+        const card = document.createElement('div');
+        card.className = 'asset-card lottie-card';
+        const preview = document.createElement('div');
+        preview.className = 'asset-preview';
+        const badge = document.createElement('div');
+        badge.className = 'badge lottie';
+        const info = document.createElement('div');
+        info.className = 'asset-info';
+
+        if (asset.unresolved) {
+            // Only the drawn frame is available
+            const img = document.createElement('img');
+            img.src = asset.url;
+            preview.appendChild(img);
+            badge.textContent = 'Lottie';
+            info.innerHTML = '<div class="asset-name">Lottie frame</div>' +
+                '<div class="asset-meta"><span title="The animation file is bundled inside the site\'s JavaScript, so only the current frame can be saved.">Source not found</span><div class="asset-actions"></div></div>';
+            const btn = document.createElement('button');
+            btn.className = 'asset-dl';
+            btn.innerHTML = ic('download', 13) + 'SVG';
+            btn.title = 'Save the current frame as SVG';
+            btn.addEventListener('click', () => downloadOne(asset, 'lottie-frame-' + Date.now() + '.svg', btn));
+            info.querySelector('.asset-actions').appendChild(btn);
+        } else {
+            playPreview(asset, preview);
+            const m = asset.meta;
+            badge.textContent = asset.dotLottie ? '.lottie' : 'Lottie';
+            info.innerHTML = '<div class="asset-name"></div><div class="asset-meta lottie-meta"><span class="lottie-info"></span></div><div class="lottie-actions"></div>';
+            info.querySelector('.asset-name').textContent = asset.baseName + (asset.dotLottie ? '.lottie' : '.json');
+            info.querySelector('.asset-name').title = asset.url.startsWith('http') ? asset.url : asset.baseName;
+            info.querySelector('.lottie-info').textContent = (m.w && m.h ? m.w + '×' + m.h + ' · ' : '') + m.seconds.toFixed(1) + 's · ' + Math.round(m.fr) + 'fps';
+            const actions = info.querySelector('.lottie-actions');
+            const add = (label, icon, title, fn) => {
+                const b = document.createElement('button');
+                b.className = 'asset-dl';
+                b.innerHTML = ic(icon, 13) + label;
+                b.title = title;
+                b.addEventListener('click', fn);
+                actions.appendChild(b);
+            };
+            add('JSON', 'download', 'Lottie JSON: use with any Lottie player, LottieFiles or After Effects (Bodymovin)', () => saveLottieJson(asset));
+            if (asset.dotLottie) add('.lottie', 'download', 'The original .lottie file', () => downloadOne(asset, asset.baseName + '.lottie', { disabled: false }));
+            add('HTML', 'player-play', 'A web page that plays the animation on its own', () => saveLottieHtml(asset));
+        }
+        card.appendChild(preview);
+        card.appendChild(badge);
+        card.appendChild(info);
+        return card;
+    }
+
+    // What the grid shows (and the ZIP saves) for the current filter
+    function visibleAssets() {
+        const anyLottie = allDiscoveredAssets.some(a => a.type === 'lottie' && a.state === 'ok');
+        return allDiscoveredAssets.filter(a => {
+            if (a.type === 'lottie') {
+                if (a.unresolved) return !anyLottie && !lottieBusy;
+                if (a.state !== 'ok') return false;
+            }
             if (currentFilter === 'all') return true;
             if (currentFilter === 'video' && a.type === 'audio') return true;
             return a.type === currentFilter;
         });
+    }
+
+    function renderAssetGrid() {
+        const grid = shadow.getElementById('asset-grid');
+        stopPreviews();
+        grid.innerHTML = '';
+
+        const filtered = visibleAssets();
 
         filtered.forEach(asset => {
+            if (asset.type === 'lottie') { grid.appendChild(renderLottieCard(asset)); return; }
             const card = document.createElement('div');
             card.className = 'asset-card';
 
@@ -555,8 +1002,8 @@
                 previewContainer.appendChild(video);
             } else if (asset.type === 'audio') {
                 const audioDiv = document.createElement('div');
-                audioDiv.style.color = 'var(--text-muted)';
-                audioDiv.textContent = '🎧 Audio';
+                audioDiv.className = 'preview-label';
+                audioDiv.innerHTML = ic('headphones', 24) + 'Audio';
                 previewContainer.appendChild(audioDiv);
             } else if (asset.type === 'font') {
                 const fontDiv = document.createElement('div');
@@ -566,8 +1013,8 @@
                 previewContainer.appendChild(fontDiv);
             } else {
                 const unkDiv = document.createElement('div');
-                unkDiv.style.color = 'var(--text-muted)';
-                unkDiv.textContent = '? Unknown';
+                unkDiv.className = 'preview-label';
+                unkDiv.innerHTML = ic('help-circle', 24) + 'Unknown';
                 previewContainer.appendChild(unkDiv);
             }
 
@@ -589,13 +1036,25 @@
             metaDiv.className = 'asset-meta';
             const typeSpan = document.createElement('span');
             typeSpan.textContent = asset.type;
+            const actions = document.createElement('div');
+            actions.className = 'asset-actions';
+            const saveOne = document.createElement('button');
+            saveOne.className = 'asset-dl';
+            saveOne.title = 'Download ' + filename;
+            saveOne.setAttribute('aria-label', 'Download ' + filename);
+            saveOne.innerHTML = ic('download', 13) + 'Save';
+            saveOne.addEventListener('click', () => downloadOne(asset, filename, saveOne));
             const openLink = document.createElement('a');
             openLink.href = asset.url;
             openLink.target = '_blank';
-            openLink.style.cssText = 'color:var(--accent); text-decoration:none;';
-            openLink.textContent = 'Open';
+            openLink.rel = 'noopener noreferrer';
+            openLink.title = 'Open in new tab';
+            openLink.setAttribute('aria-label', 'Open ' + filename + ' in new tab');
+            openLink.innerHTML = ic('external-link', 13);
+            actions.appendChild(saveOne);
+            actions.appendChild(openLink);
             metaDiv.appendChild(typeSpan);
-            metaDiv.appendChild(openLink);
+            metaDiv.appendChild(actions);
 
             info.appendChild(nameDiv);
             info.appendChild(metaDiv);
@@ -610,14 +1069,18 @@
 
         if (filtered.length === 0) {
             const emptyState = document.createElement('div');
-            emptyState.style.cssText = 'grid-column: 1 / -1; text-align:center; padding: 40px 0; color: var(--text-muted);';
-            emptyState.textContent = `No ${currentFilter === 'all' ? '' : currentFilter} assets found.`;
+            emptyState.className = 'empty-state';
+            emptyState.innerHTML = ic('photo-off', 28) + `No ${currentFilter === 'all' ? '' : currentFilter} assets found.`;
             grid.appendChild(emptyState);
         }
     }
 
     function updateCounts() {
-        shadow.getElementById('status-text').textContent = `${allDiscoveredAssets.length} total assets`;
+        const saved = currentFilter;
+        currentFilter = 'all';
+        const n = visibleAssets().length;
+        currentFilter = saved;
+        shadow.getElementById('status-text').textContent = `${n} total assets`;
     }
 
     function showToast(msg, duration = 2000) {
@@ -644,11 +1107,7 @@
             const zip = new JSZip();
             const root = zip.folder("extracted_assets");
 
-            const filtered = allDiscoveredAssets.filter(a => {
-                if (currentFilter === 'all') return true;
-                if (currentFilter === 'video' && a.type === 'audio') return true;
-                return a.type === currentFilter;
-            });
+            const filtered = visibleAssets();
 
             let successCount = 0;
             let failCount = 0;
@@ -663,6 +1122,12 @@
                     'audio': 'media',
                     'font': 'fonts'
                 };
+                if (asset.type === 'lottie') {
+                    if (asset.unresolved) { root.file('lottie/lottie-frame-' + asset.id + '.svg', decodeURIComponent(asset.url.split(',')[1] || '')); }
+                    else root.file('lottie/' + asset.baseName + '.json', asset.jsonText);
+                    successCount++;
+                    return;
+                }
                 const folderName = folderMap[asset.type] || 'misc';
                 const safeName = folderName + '/' + filename.replace(/[^a-z0-9.-]/gi, '_');
 
@@ -726,5 +1191,6 @@
     renderAssetGrid();
     updateCounts();
     updateSaveBtnLabel();
+    resolveLotties();
 
 })();

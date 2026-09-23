@@ -1,16 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Codex Dev",
-  "version": "1.3.0",
-  "description": "Developer's Insight Tool - Responsive viewer, CSS inspector, SEO audit, asset extractor and screenshot capture.",
+  "version": "1.4.0",
+  "description": "Developer's Insight Tool - Responsive viewer with device mockups, design inspector, CSS editor, SEO audit, asset extractor and screenshot capture.",
   "permissions": [
     "activeTab",
     "tabs",
     "storage",
+    "unlimitedStorage",
     "scripting",
     "downloads",
     "declarativeNetRequest",
-    "declarativeNetRequestWithHostAccess"
+    "declarativeNetRequestWithHostAccess",
+    "webNavigation",
+    "debugger"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -45,21 +48,23 @@
       ],
       "all_frames": true,
       "run_at": "document_end"
-    },
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "ua-spoof.js"
-      ],
-      "all_frames": true,
-      "run_at": "document_start"
     }
   ],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "commands": {
+    "toggle-inspector": {
+      "suggested_key": {
+        "default": "Alt+Shift+I"
+      },
+      "description": "Toggle the Design Inspector on the current page"
+    }
+  },
+  "options_ui": {
+    "page": "ai-settings.html",
+    "open_in_tab": true
   }
 }

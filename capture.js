@@ -12,8 +12,11 @@
     }
 
     // ── Toast ─────────────────────────────────────────────────────────
+    // Delegates to the shared implementation (utils/codex-ui.js, injected
+    // by popup.js before this file) so timing/font/easing stay in sync with
+    // every other tool's toast instead of drifting independently.
     function toast(msg, dur) {
-        dur = dur || 2500;
+        if (window.CodexUI) { window.CodexUI.toast(msg, dur); return; }
         var old = document.getElementById('__cx_toast');
         if (old) old.remove();
         var el = document.createElement('div');
@@ -22,12 +25,12 @@
         Object.assign(el.style, {
             position: 'fixed', bottom: '30px', left: '50%',
             transform: 'translateX(-50%) translateY(14px)',
-            background: 'linear-gradient(135deg,#4FD1C5,#9F7AEA)',
-            color: '#000', padding: '10px 22px', borderRadius: '30px',
+            background: '#16171a', border: '1px solid rgba(255,255,255,0.12)',
+            color: '#ececef', padding: '9px 16px', borderRadius: '10px',
             zIndex: '2147483647', fontFamily: 'system-ui,sans-serif',
-            fontSize: '13px', fontWeight: '700',
-            boxShadow: '0 8px 28px rgba(79,209,197,0.5)',
-            transition: 'all 0.3s cubic-bezier(0.175,0.885,0.32,1.275)',
+            fontSize: '13px', fontWeight: '500',
+            boxShadow: '0 16px 40px -12px rgba(0,0,0,0.55)',
+            transition: 'all 0.3s cubic-bezier(0.16,1,0.3,1)',
             opacity: '0', pointerEvents: 'none'
         });
         document.body.appendChild(el);
@@ -35,10 +38,18 @@
         setTimeout(function () {
             el.style.opacity = '0'; el.style.transform = 'translateX(-50%) translateY(14px)';
             setTimeout(function () { if (el.parentNode) el.remove(); }, 320);
-        }, dur);
+        }, dur || 2500);
     }
 
     // ── Listen for commands from popup/background ─────────────────────
+    // Full-page capture is handled entirely by background.js (it drives the
+    // scroll+stitch itself via chrome.scripting.executeScript) — it never
+    // messages this content script, so CAPTURE_FULL_PAGE/GET_PAGE_DIMENSIONS/
+    // SCROLL_TO/RESTORE_SCROLL branches used to sit here calling a
+    // captureFullPage() that was never defined in this file: a guaranteed
+    // ReferenceError the moment this script was still resident on the page
+    // (from a prior Select Area/Element use) when a Full Page capture ran.
+    // Only the two capture modes this file actually implements are handled.
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         if (msg.action === 'CAPTURE_SELECT_AREA') {
             startAreaSelect(msg.format || 'png');
@@ -46,23 +57,6 @@
         } else if (msg.action === 'CAPTURE_SELECT_ELEMENT') {
             startElementPicker(msg.format || 'png');
             sendResponse({ ok: true });
-        } else if (msg.action === 'CAPTURE_FULL_PAGE') {
-            captureFullPage(msg, sendResponse);
-            return true;
-        } else if (msg.action === 'GET_PAGE_DIMENSIONS') {
-            sendResponse({
-                scrollWidth:  Math.max(document.body.scrollWidth,  document.documentElement.scrollWidth),
-                scrollHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
-                viewWidth:    window.innerWidth,
-                viewHeight:   window.innerHeight,
-                devicePixelRatio: window.devicePixelRatio || 1
-            });
-        } else if (msg.action === 'SCROLL_TO') {
-            window.scrollTo(0, msg.y);
-            setTimeout(function () { sendResponse({ scrollY: window.scrollY }); }, 150);
-            return true;
-        } else if (msg.action === 'RESTORE_SCROLL') {
-            window.scrollTo(0, msg.y);
         }
     });
 
@@ -71,7 +65,7 @@
     // ═══════════════════════════════════════════════════════════════════
     function startAreaSelect(format) {
         window.__codexCaptureActive = true;
-        toast('🎯 Drag to select an area to capture', 4000);
+        toast('Drag to select an area to capture', 4000);
 
         // Root container — intercepts all mouse events but is itself invisible
         var overlay = document.createElement('div');
@@ -105,9 +99,9 @@
         // Dimensions label
         var lbl = document.createElement('div');
         Object.assign(lbl.style, {
-            position: 'fixed', background: '#4FD1C5', color: '#000',
-            fontSize: '11px', fontWeight: '700', fontFamily: 'monospace',
-            padding: '2px 7px', borderRadius: '4px',
+            position: 'fixed', background: '#4FD1C5', color: '#07201d',
+            fontSize: '11px', fontWeight: '600', fontFamily: 'ui-monospace,monospace',
+            padding: '2px 7px', borderRadius: '6px',
             display: 'none', pointerEvents: 'none', zIndex: '2147483647'
         });
 
@@ -116,10 +110,10 @@
         Object.assign(hint.style, {
             position: 'fixed', top: '12px', left: '50%',
             transform: 'translateX(-50%)',
-            background: 'rgba(0,0,0,0.75)', color: '#fff',
-            padding: '7px 16px', borderRadius: '8px', fontSize: '12px',
+            background: '#16171a', color: '#ececef',
+            padding: '7px 14px', borderRadius: '10px', fontSize: '12px',
             fontFamily: 'system-ui,sans-serif', zIndex: '2147483647',
-            pointerEvents: 'none', border: '1px solid rgba(79,209,197,0.4)',
+            pointerEvents: 'none', border: '1px solid rgba(255,255,255,0.12)',
             whiteSpace: 'nowrap'
         });
         hint.textContent = 'Drag to select · Press Esc to cancel';
@@ -187,14 +181,17 @@
             }, 80);
         });
 
+        function onEsc(e) {
+            if (e.key === 'Escape') { cleanup(); toast('Capture cancelled'); }
+        }
+
         function cleanup() {
             window.__codexCaptureActive = false;
             [overlay, box, lbl, hint, mTop, mBot, mLeft, mRight].forEach(function(el){ if(el.parentNode) el.remove(); });
+            document.removeEventListener('keydown', onEsc);
         }
 
-        document.addEventListener('keydown', function onEsc(e) {
-            if (e.key === 'Escape') { cleanup(); document.removeEventListener('keydown', onEsc); toast('Capture cancelled'); }
-        });
+        document.addEventListener('keydown', onEsc);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -202,21 +199,21 @@
     // ═══════════════════════════════════════════════════════════════════
     function startElementPicker(format) {
         window.__codexCaptureActive = true;
-        toast('🖱 Click any element to capture it', 4000);
+        toast('Click any element to capture it', 4000);
         document.body.style.cursor = 'crosshair';
 
         var highlight = document.createElement('div');
         Object.assign(highlight.style, {
             position: 'fixed', pointerEvents: 'none', zIndex: '2147483646',
-            border: '2px solid #9F7AEA', background: 'rgba(159,122,234,0.1)',
-            boxShadow: '0 0 0 1px rgba(159,122,234,0.3)',
-            borderRadius: '4px', transition: 'all 0.1s', display: 'none'
+            border: '2px solid #4FD1C5', background: 'rgba(79,209,197,0.1)',
+            boxShadow: '0 0 0 1px rgba(79,209,197,0.3)',
+            borderRadius: '6px', transition: 'all 0.1s', display: 'none'
         });
         var label = document.createElement('div');
         Object.assign(label.style, {
             position: 'fixed', pointerEvents: 'none', zIndex: '2147483647',
-            background: '#9F7AEA', color: '#fff', fontSize: '11px', fontWeight: '700',
-            fontFamily: 'monospace', padding: '2px 6px', borderRadius: '4px', display: 'none'
+            background: '#4FD1C5', color: '#07201d', fontSize: '11px', fontWeight: '600',
+            fontFamily: 'ui-monospace,monospace', padding: '2px 6px', borderRadius: '6px', display: 'none'
         });
         document.body.appendChild(highlight);
         document.body.appendChild(label);

@@ -1,0 +1,18 @@
+{
+  "name": "codex-ai-build",
+  "private": true,
+  "type": "module",
+  "description": "Bundles ai/claude-service.js with the Anthropic SDK into vendor/claude-service.js for the background service worker.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.9",
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-terser": "^0.4.4",
+    "rollup": "^4.0.0"
+  }
+}

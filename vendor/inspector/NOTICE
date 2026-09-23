@@ -1,0 +1,17 @@
+Codex Dev Design Inspector
+
+This tool is a modified build of an open-source project by Google LLC,
+licensed under the Apache License, Version 2.0 (see LICENSE in this folder):
+https://github.com/GoogleChromeLabs/ProjectVisBug
+(commit fef96fad0c54547637dd2bbdc326450027a906e7)
+
+Codex Dev changed the following when building inspector.js and inspector.css:
+
+  - Renamed the custom elements, identifiers and file names to Codex Dev names.
+  - Restyled the toolbar: horizontal, docked at the bottom of the window,
+    Codex Dev colors and spacing, Tabler line icons (MIT) instead of the
+    original icon set.
+  - Tooltips show text only; the tutorial animations are not included.
+  - Empty color pickers use the toolbar icon color.
+  - Built from the toolbar component instead of the demo site entry file,
+    as a classic script that defines its elements only once per page.

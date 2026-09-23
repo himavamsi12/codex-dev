@@ -1,0 +1,91 @@
+/* Shared design tokens for popup.html and viewer.html.
+   Keep the dark values in sync with the TOKENS_CSS string in utils/codex-ui.js -
+   that copy serves the same values into shadow-DOM injected panels, which
+   can't reach an external stylesheet's :root.
+
+   System: neutral zinc surfaces, one brand accent (teal, from the logo),
+   radius scale 6 / 10 / pill, 1.5px line icons (utils/icons.js). */
+:root {
+    color-scheme: dark;
+
+    --cx-bg: #0e0f11;
+    --cx-bg-alt: #121316;
+    --cx-panel: #16171a;
+    --cx-panel-alt: #1d1e22;
+    --cx-hover: rgba(255, 255, 255, 0.05);
+    --cx-border: rgba(255, 255, 255, 0.08);
+    --cx-border-strong: rgba(255, 255, 255, 0.14);
+    --cx-text: #ececef;
+    --cx-text-muted: #9b9ca4;
+    --cx-text-faint: #6e7078;
+
+    --cx-accent: #4fd1c5;
+    --cx-accent-hover: #6adbd0;
+    --cx-accent-text: #5fd8cc;
+    --cx-accent-soft: rgba(79, 209, 197, 0.12);
+    --cx-accent-ring: rgba(79, 209, 197, 0.35);
+    --cx-on-accent: #07201d;
+
+    --cx-danger: #f07575;
+    --cx-warning: #e8a64a;
+    --cx-success: #5ccf8d;
+    --cx-info: #6fb3ec;
+
+    --cx-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+
+    --cx-radius-sm: 6px;
+    --cx-radius-md: 10px;
+    --cx-radius-lg: 10px;
+    --cx-radius-pill: 999px;
+
+    --cx-space-1: 4px;
+    --cx-space-2: 8px;
+    --cx-space-3: 12px;
+    --cx-space-4: 16px;
+    --cx-space-6: 24px;
+
+    --cx-ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --cx-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+    --cx-font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        color-scheme: light;
+
+        --cx-bg: #f6f6f7;
+        --cx-bg-alt: #efeff1;
+        --cx-panel: #ffffff;
+        --cx-panel-alt: #f3f3f5;
+        --cx-hover: rgba(17, 18, 22, 0.04);
+        --cx-border: rgba(17, 18, 22, 0.09);
+        --cx-border-strong: rgba(17, 18, 22, 0.16);
+        --cx-text: #16171a;
+        --cx-text-muted: #5b5d65;
+        --cx-text-faint: #8a8c94;
+
+        --cx-accent: #0f7f75;
+        --cx-accent-hover: #0c6c63;
+        --cx-accent-text: #0b7a70;
+        --cx-accent-soft: rgba(20, 163, 150, 0.1);
+        --cx-accent-ring: rgba(20, 163, 150, 0.3);
+        --cx-on-accent: #ffffff;
+
+        --cx-danger: #c93c3c;
+        --cx-warning: #b26b0f;
+        --cx-success: #1f8a4c;
+        --cx-info: #2f6fb0;
+
+        --cx-shadow: 0 1px 2px rgba(17, 18, 22, 0.05), 0 12px 32px -14px rgba(17, 18, 22, 0.18);
+    }
+}
+
+.cx-icon { flex-shrink: 0; display: block; }
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
