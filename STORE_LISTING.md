@@ -1,79 +1,78 @@
 # Codex Dev - Chrome Web Store Listing
 
 ## Short Description (132 characters max)
-Test responsive designs and visually edit any website live. Inspect media queries, drag elements, and export to CodePen instantly!
+Responsive viewer with 78 device mockups, layout audit, design inspector, CSS editor and screenshots. Works with Claude Code.
 
 ## Detailed Description
 
-**Codex Dev** is the ultimate responsive design testing and visual editing tool for web developers. View your website across multiple device screen sizes simultaneously in a single organized tab, and edit elements visually in real-time.
+**Codex Dev** is a design and development toolkit for the web. See your site on phones, tablets and desktops side by side, find layout problems on every device, inspect and edit any page, and let Claude Code test your pages for you.
 
-### ✨ Key Features
+### ✨ What's new in 1.6.0
 
-**🎨 Powerful Visual Editor (NEW!)**
-- **Live Editing:** Edit HTML, inline styles, media queries, and animations in real-time.
-- **Visual Controls:** Style elements visually with dedicated Typography, Layout, Background, and Spacing controls.
-- **Pseudo Classes:** Simulate and inspect `:hover`, `:active`, and `:focus` states easily.
-- **Media Queries:** Inspect and edit styles across all active breakpoints.
-- **Drag & Drop Positioning:** Free drag any element anywhere on the page to build layouts intuitively.
-- **Syntax Highlighting:** Code is syntax highlighted for better reading and editing.
-- **Export to CodePen:** Copy or export whole components with their children and styles directly to CodePen!
+- **Popular Mix:** choose your own default devices. Quick Launch opens them, and Claude Code tests exactly those.
+- **Claude Code connection:** say "check responsive" in Claude Code and it tests your page in the Responsive Viewer, reports which devices pass or fail, and can fix the problems in your source code.
+- **Keyboard shortcuts:** Alt+Shift+D (Option+Shift+D on Mac) opens Codex Dev, Alt+Shift+V opens the page with your Popular Mix. Arrow and number keys work inside the popup; press ? for the full list.
+- **Network and CPU throttling now reach every device frame**, so Slow 3G and 6× CPU slowdown really slow down the site you test.
+- **More sites load in the viewer**, including sites that block being shown in frames.
 
-**🖥️ Multi-Device Testing**
-- View iPhone, iPad, and Desktop sizes side-by-side
-- Test multiple breakpoints at once
-- Quick launch presets for common device combinations
+### 🖥️ Responsive Viewer
 
-**📱 Comprehensive Device Library**
-- Mobile: iPhone 14 Pro, iPhone SE, Samsung Galaxy S23, Pixel 7
-- Tablet: iPad Pro 12.9", iPad Air, iPad Mini, Surface Pro 7
-- Desktop: 1366x768, 1920x1080, 2560x1440, 4K (3840x2160)
-- Custom sizes: Enter any dimensions (min 320px)
+- 78 devices: iPhones, Galaxy, Pixel, iPads, Surface, laptops and desktops up to 4K, plus any custom size
+- Realistic device frames, portrait and landscape
+- Synced scrolling across all devices
+- Layout audit: sideways scrolling, overflowing elements, cut-off text, covered controls, small tap targets and small text, with numbered pins on each device
+- Network (Fast 3G, Slow 3G, Offline) and CPU throttling
+- Device user agents, rulers, and screenshots of every device
 
-**🎯 Smart Hybrid Approach**
-- Iframe-first: All devices in one tab when possible
-- Automatic fallback: Opens popup windows for iframe-blocking sites
-- Works with ALL websites including Facebook, Twitter, and more
+### 🎨 Design Inspector
 
-**⚙️ Powerful Controls**
-- 🔄 Rotate devices (portrait ↔ landscape)
-- ↻ Refresh individual or all viewports
-- 🔗 Synchronized scrolling across all devices
-- 📸 Screenshot capture for each viewport
+- Guides, spacing, fonts, flexbox, colors and accessibility checks on any page
+- Toggle it from the popup or with Alt+Shift+I
 
-**💎 Premium Interface**
-- Modern dark mode design
-- Clean, organized layout
-- Smooth animations
-- Responsive grid that adapts to your screen
+### ✏️ Visual Editor
 
-### 🚀 Perfect For
+- Click, multi-select, nudge and edit any element live
+- Edit HTML, styles and media queries; preview :hover, :active and :focus
+- Drag elements to try out layouts
+- Export components to CodePen
 
-- Frontend developers testing responsive designs
-- UI/UX Designers prototyping layouts live in the browser
-- QA engineers validating cross-device compatibility
-- Anyone building mobile-first websites
+### 📦 Asset Extractor
 
-### 🔒 Privacy First
+- Collect every image, SVG, font, video and Lottie animation on the page and download the ones you want
 
-- All data stored locally on your device
-- No external servers or analytics
-- No data collection or tracking
-- Open source and transparent
+### 📸 Capture
+
+- Screenshot the visible area, the full page, a selected area or a single element, as PNG, JPEG or WEBP
+
+### 💬 Feedback
+
+- Pin notes directly on page elements and share a feedback report
+
+### 🤖 Claude Code (optional)
+
+- Connect Claude Code on your own computer with a one-time code
+- Claude Code can only use the tabs you allow
+- Checks layout, fonts, accessibility and spacing at mobile, tablet and desktop sizes, then fixes what you approve in your project's source
+
+### 🔒 Privacy
+
+- No accounts, no analytics, no tracking
+- Settings, your device list and feedback pins stay on your device
+- The Claude Code connection only talks to a server on your own computer (127.0.0.1)
+- Open source: https://github.com/himavamsi12/codex-dev
 
 ### 📖 How to Use
 
-1. Click the Codex Dev icon in your toolbar
-2. Select a quick launch preset or individual devices to test responsiveness
-3. Alternatively, click the CSS Viewer icon to launch the Visual Editor on any webpage elements
-4. Drag, edit, and export your components seamlessly!
+1. Click the Codex Dev icon (or press Alt+Shift+D)
+2. **Launch Viewer:** pick a Quick Launch preset, your Popular Mix, or any device
+3. **Tools:** start the Design Inspector, Visual Editor, Asset Extractor, Capture or Feedback on the page you're on
+4. Optional: connect Claude Code from the popup and say "check responsive"
 
-### 🆓 Completely Free
+### 🆓 Free
 
-No subscriptions, no hidden fees, no premium tiers. Built by developers, for developers.
+No subscriptions, no hidden fees. Built by developers, for developers.
 
 ---
-
-**Made with ❤️ for the web development community**
 
 ## Category
 Developer Tools
@@ -81,38 +80,24 @@ Developer Tools
 ## Language
 English
 
-## Screenshots Needed
+## Screenshots (1280x800px)
 
-1. **Main Viewer** (1280x800px)
-   - Show multiple device viewports side-by-side
-   - Display a popular website (e.g., GitHub, your portfolio)
-   - Caption: "View multiple device sizes simultaneously in one tab"
-
-2. **Visual Editor Panel** (1280x800px)
-   - Show the new visual editor sidebar over a live webpage
-   - Highlight the Live Code Editor tab
-   - Caption: "Visually edit HTML, CSS, & Media Queries in real-time"
-
-3. **CodePen Export & Dragging** (1280x800px)
-   - Show an element being dragged and the Export button
-   - Caption: "Free drag positioning and instant CodePen exports"
-
-4. **Popup Interface** (1280x800px)
-   - Show the extension popup with device selection
-   - Highlight quick launch presets
-   - Caption: "Quick launch presets for instant testing"
-
-5. **Responsive Grid** (1280x800px)
-   - Show how viewports adapt to screen size
-   - Display clean layout
-   - Caption: "Clean, organized interface that scales with you"
+1. **Responsive Viewer:** several device frames side by side on a real site.
+   Caption: "See your site on phones, tablets and desktops at once"
+2. **Layout audit:** the audit drawer open with numbered pins on the devices.
+   Caption: "Find layout problems on every device"
+3. **Popular Mix editor:** the popup with the device chips and search list.
+   Caption: "Choose the devices you test every time"
+4. **Design Inspector / Visual Editor:** the inspector or editor panel over a live page.
+   Caption: "Inspect and edit any page live"
+5. **Claude Code:** a terminal saying "check responsive" next to the viewer with results.
+   Caption: "Let Claude Code test and fix your responsive layout"
 
 ## Promotional Images
 
 ### Small Tile (440x280px)
 - Extension icon with "Codex Dev" text
-- Tagline: "Responsive Testing & Visual Editing"
-- Clean, modern design
+- Tagline: "Responsive testing, inspection and editing"
 
 ## Tags/Keywords
-visual editor, responsive design, developer tools, css editor, live edit, codepen export, viewport testing, mobile testing, web development, screen sizes, device emulation, frontend development
+responsive design, device mockups, responsive viewer, layout audit, design inspector, css editor, visual editor, screenshot, asset extractor, claude code, mcp, developer tools, mobile testing, frontend development
