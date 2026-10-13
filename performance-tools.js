@@ -3,6 +3,11 @@ class PerformanceTools {
     constructor() {
         this.tabId = null;
         this.isDebugging = false;
+        // Device frames on other sites run in their own processes (out-of-process
+        // iframes): throttling the viewer tab alone never reaches them. Auto-attach
+        // gives each frame its own debugger session, and every setting is applied
+        // to the tab and to each of those sessions.
+        this.sessions = new Set();
 
         // Define Network Presets (Chrome DevTools defaults)
         this.networkPresets = {
@@ -52,10 +57,27 @@ class PerformanceTools {
 
         // Listen for detach events (user closed warning banner)
         chrome.debugger.onDetach.addListener((source, reason) => {
-            if (source.tabId === this.tabId) {
+            if (source.tabId === this.tabId && !source.sessionId) {
                 console.log('Debugger detached:', reason);
                 this.isDebugging = false;
+                this.sessions.clear();
                 this.updateUIState();
+            }
+        });
+
+        // A device frame was created or reloaded: throttle it before it runs.
+        chrome.debugger.onEvent.addListener((source, method, params) => {
+            if (source.tabId !== this.tabId) return;
+            if (method === 'Target.attachedToTarget') {
+                const session = { tabId: this.tabId, sessionId: params.sessionId };
+                // Workers (the page's own) only get network throttling; frames get both.
+                const isFrame = /^(page|iframe)$/.test(params.targetInfo && params.targetInfo.type);
+                this.sessions.add(params.sessionId);
+                (isFrame ? this.prepare(session).then(() => this.applyTo(session)) : this.applyNetwork(session))
+                    .catch(e => console.warn('Throttle frame:', e.message))
+                    .finally(() => this.send(session, 'Runtime.runIfWaitingForDebugger').catch(() => {}));
+            } else if (method === 'Target.detachedFromTarget') {
+                this.sessions.delete(params.sessionId);
             }
         });
     }
@@ -115,50 +137,80 @@ class PerformanceTools {
         this.cpuSelect = cpuSelect;
     }
 
-    async attachDebugger() {
-        if (this.isDebugging) return;
+    send(target, method, params) {
         return new Promise((resolve, reject) => {
-            const target = { tabId: this.tabId };
-            chrome.debugger.attach(target, "1.3", () => {
-                if (chrome.runtime.lastError) {
-                    console.error(chrome.runtime.lastError);
-                    reject(chrome.runtime.lastError);
-                    return;
-                }
-                this.isDebugging = true;
-                resolve();
+            chrome.debugger.sendCommand(target, method, params || {}, (res) => {
+                if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                else resolve(res);
             });
         });
     }
 
-    async applySettings() {
-        // If settings are default, we might not need debugger attached? 
-        // Actually, better to keep attached if user interacted, or detach if both are default.
-        // For simplicity, we attach on first non-default usage.
+    // Network emulation needs the Network domain; nested frames need auto-attach too.
+    async prepare(target) {
+        await this.send(target, 'Network.enable');
+        await this.send(target, 'Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+    }
 
+    async attachDebugger() {
+        if (this.isDebugging) return;
+        const target = { tabId: this.tabId };
+        await new Promise((resolve, reject) => {
+            chrome.debugger.attach(target, "1.3", () => {
+                if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                else resolve();
+            });
+        });
+        this.isDebugging = true;
+        // Attaches to the frames already open as well (Target.attachedToTarget for each).
+        await this.prepare(target);
+    }
+
+    async applyNetwork(target) {
+        await this.send(target, 'Network.enable');
+        await this.send(target, 'Network.emulateNetworkConditions', this.networkPresets[this.currentNetwork]);
+    }
+
+    async applyTo(target) {
+        await this.send(target, 'Network.emulateNetworkConditions', this.networkPresets[this.currentNetwork]);
+        await this.send(target, 'Emulation.setCPUThrottlingRate', { rate: this.cpuPresets[this.currentCpu] || 1 });
+    }
+
+    // One change at a time: two quick changes must not interleave attach/detach.
+    applySettings() {
+        this.queue = (this.queue || Promise.resolve()).then(() => this.applyNow());
+        return this.queue;
+    }
+
+    async applyNow() {
         const isDefault = this.currentNetwork === 'online' && this.currentCpu === '1';
 
-        if (!this.isDebugging && !isDefault) {
-            await this.attachDebugger();
+        if (isDefault) {
+            // Detaching drops every emulation and removes Chrome's debugging banner.
+            if (this.isDebugging) chrome.debugger.detach({ tabId: this.tabId }, () => void chrome.runtime.lastError);
+            this.isDebugging = false;
+            this.sessions.clear();
+            return;
         }
 
-        if (!this.isDebugging) return; // Should be attached now if needed
-
-        const target = { tabId: this.tabId };
-
-        // Apply Network
-        const netProfile = this.networkPresets[this.currentNetwork];
-        chrome.debugger.sendCommand(target, "Network.emulateNetworkConditions", netProfile);
-
-        // Apply CPU
-        const rate = parseInt(this.currentCpu);
-        chrome.debugger.sendCommand(target, "Emulation.setCPUThrottlingRate", { rate: rate });
-
-        // If back to defaults, we could detach to remove the banner
-        if (isDefault) {
-            chrome.debugger.detach(target, () => {
-                this.isDebugging = false;
-            });
+        try {
+            await this.attachDebugger();
+            const targets = [{ tabId: this.tabId }].concat(Array.from(this.sessions, sessionId => ({ tabId: this.tabId, sessionId })));
+            await Promise.all(targets.map(t => this.applyTo(t).catch(e => {
+                if (!t.sessionId) throw e;
+                // A worker (network only) or a frame that went away meanwhile
+                return this.applyNetwork(t).catch(() => this.sessions.delete(t.sessionId));
+            })));
+        } catch (e) {
+            console.error('Throttling failed:', e);
+            const msg = /attached/i.test(e.message)
+                ? 'Throttling needs the debugger, which DevTools or another tool is using. Close it and try again.'
+                : 'Could not apply throttling: ' + e.message;
+            if (window.CodexUI) CodexUI.toast(msg, 5000);
+            this.updateUIState();
+            if (this.isDebugging) chrome.debugger.detach({ tabId: this.tabId }, () => void chrome.runtime.lastError);
+            this.isDebugging = false;
+            this.sessions.clear();
         }
     }
 

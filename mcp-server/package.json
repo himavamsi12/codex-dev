@@ -1,0 +1,35 @@
+{
+  "name": "codex-dev-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that lets Claude Code audit and debug pages through the Codex Dev Chrome extension.",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "bin": {
+    "codex-dev-mcp": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "pixelmatch": "^8.0.0",
+    "pngjs": "^7.0.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/pngjs": "^6.0.5",
+    "@types/ws": "^8.18.2",
+    "puppeteer-core": "^24.43.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

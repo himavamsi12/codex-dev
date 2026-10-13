@@ -12,25 +12,53 @@
         const assets = new Map(); // URL -> Asset Data
         let assetCount = 0;
 
-        function addAsset(url, type, sourceEl) {
+        function addAsset(url, type, sourceEl, extra) {
+            if (!url || typeof url !== 'string') return;
+            url = url.trim();
             if (!url || url.startsWith('data:') || url.startsWith('blob:')) return;
 
             // Try to resolve relative URLs
             try { url = new URL(url, window.location.href).href; } catch (e) { return; }
+            if (!/^https?:/.test(url)) return;
 
             if (!assets.has(url)) {
                 let format = url.split('.').pop().split(/#|\?/)[0].toLowerCase();
                 if (format.length > 5) format = 'unknown';
                 if (!format && type === 'image') format = 'img';
+                if ((format === 'unknown' || !format) && (type === 'video' || type === 'audio')) format = type;
 
-                assets.set(url, {
+                assets.set(url, Object.assign({
                     url: url,
                     type: type,
                     format: format,
                     frameUrl: window.location.href,
                     id: `asset-${Date.now()}-${assetCount++}`
-                });
+                }, extra || {}));
+            } else if (extra) {
+                // Keep the richest details (e.g. a poster found later)
+                const a = assets.get(url);
+                Object.keys(extra).forEach(k => { if (a[k] == null) a[k] = extra[k]; });
             }
+        }
+
+        // querySelectorAll that also looks inside open shadow roots (web
+        // components, custom video players)
+        const shadowRoots = [];
+        (function collectRoots(root) {
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+            let node = walker.nextNode();
+            while (node) {
+                if (node.shadowRoot && node.id !== HOST_ID) {
+                    shadowRoots.push(node.shadowRoot);
+                    collectRoots(node.shadowRoot);
+                }
+                node = walker.nextNode();
+            }
+        })(document);
+        function deepQueryAll(selector) {
+            const out = Array.from(document.querySelectorAll(selector));
+            shadowRoots.forEach(r => { try { out.push(...r.querySelectorAll(selector)); } catch (e) { } });
+            return out;
         }
 
         // 1. Images
@@ -44,15 +72,126 @@
             }
         });
 
-        // 2. Videos & Audio
-        document.querySelectorAll('video, audio').forEach(media => {
-            const type = media.tagName.toLowerCase();
-            if (media.src) addAsset(media.src, type, media);
+        // 2. Videos & Audio (deep)
+        const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv|mkv)(?:[?#]|$)/i;
+        const AUDIO_EXT = /\.(mp3|m4a|aac|wav|oga|ogg|flac|opus)(?:[?#]|$)/i;
+        const STREAM_EXT = /\.(m3u8|mpd)(?:[?#]|$)/i;
+        // Pieces of an adaptive stream, not whole files
+        const SEGMENT = /(?:[?&](?:range|bytestart|byteend|sq)=|\/(?:seg|segment|chunk|frag|fragment|init)[-_]?\d*[^/]*$)/i;
+        const mediaKind = url => VIDEO_EXT.test(url) ? 'video' : AUDIO_EXT.test(url) ? 'audio' : STREAM_EXT.test(url) ? 'stream' : null;
+        function addMedia(url, kind, extra) {
+            if (!url) return;
+            kind = kind || mediaKind(url);
+            if (!kind) return;
+            if (kind === 'stream') {
+                extra = Object.assign({ stream: true }, extra);
+                kind = 'video';
+            }
+            addAsset(url, kind, null, extra);
+        }
+        function addPoster(url) { if (url) addAsset(url, 'image', null); }
 
-            media.querySelectorAll('source').forEach(source => {
-                if (source.src) addAsset(source.src, type, source);
+        deepQueryAll('video, audio').forEach(media => {
+            const type = media.tagName.toLowerCase();
+            const poster = type === 'video' ? (media.poster || media.getAttribute('data-poster') || '') : '';
+            let extra;
+            try { if (poster) extra = { poster: new URL(poster, location.href).href }; } catch (e) { }
+            addPoster(poster);
+            // currentSrc is the source the browser actually picked
+            [media.currentSrc, media.src, media.getAttribute('data-src'), media.getAttribute('data-video-src')].forEach(u => {
+                if (u) addMedia(u, mediaKind(u) || type, extra);
             });
+            media.querySelectorAll('source').forEach(source => {
+                const u = source.src || source.getAttribute('data-src') || source.getAttribute('data-srcset');
+                if (u) addMedia(u, mediaKind(u) || type, extra);
+            });
+            media.querySelectorAll('track[src]').forEach(t => addAsset(t.src, 'subtitle', null, { format: 'vtt' }));
+            // Streamed through MediaSource (blob: URL): no file to save, but
+            // the page's network log below usually holds the playlist
+            if ((media.currentSrc || media.src || '').startsWith('blob:')) {
+                addAsset(location.href + '#codex-stream-' + assetCount, 'video', null, {
+                    format: 'stream', streamOnly: true, poster: extra && extra.poster,
+                    title: document.title || 'Streamed video'
+                });
+            }
         });
+
+        // Lazy-loaded and background videos kept in data attributes
+        const LAZY_ATTRS = ['data-src', 'data-video', 'data-video-src', 'data-video-url', 'data-bg-video', 'data-mp4', 'data-webm', 'data-hls', 'data-stream', 'data-url', 'data-file'];
+        deepQueryAll(LAZY_ATTRS.map(a => '[' + a + ']').join(',')).forEach(el => {
+            LAZY_ATTRS.forEach(attr => { const v = el.getAttribute(attr); if (v && v.length < 2048) addMedia(v); });
+        });
+
+        // Links straight to media files
+        deepQueryAll('a[href]').forEach(a => addMedia(a.getAttribute('href')));
+
+        // Social / SEO metadata
+        document.querySelectorAll('meta[property^="og:video"], meta[property^="og:audio"], meta[name^="twitter:player:stream"]').forEach(m => {
+            const v = m.getAttribute('content');
+            if (v && /^(https?:)?\/\//.test(v) && !/:(type|width|height)$/.test(m.getAttribute('property') || '')) {
+                addMedia(v, mediaKind(v) || (/audio/.test(m.getAttribute('property')) ? 'audio' : 'video'));
+            }
+        });
+        document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
+            try {
+                const walk = o => {
+                    if (!o || typeof o !== 'object') return;
+                    if (Array.isArray(o)) { o.forEach(walk); return; }
+                    if (/VideoObject|AudioObject/.test(o['@type'] || '')) {
+                        const poster = Array.isArray(o.thumbnailUrl) ? o.thumbnailUrl[0] : o.thumbnailUrl;
+                        if (o.contentUrl) addMedia(o.contentUrl, mediaKind(o.contentUrl) || (/Audio/.test(o['@type']) ? 'audio' : 'video'), { poster, title: o.name });
+                        else if (o.embedUrl) addEmbed(o.embedUrl, o.name, poster);
+                    }
+                    Object.values(o).forEach(walk);
+                };
+                walk(JSON.parse(s.textContent));
+            } catch (e) { }
+        });
+
+        // Embedded players (YouTube, Vimeo, ...). These can't be saved as a
+        // file, but they are shown with a link.
+        function addEmbed(src, title, poster) {
+            let u;
+            try { u = new URL(src, location.href); } catch (e) { return; }
+            let provider = null, thumb = poster || null, watch = u.href;
+            const yt = u.hostname.match(/(?:^|\.)(?:youtube(?:-nocookie)?\.com|youtu\.be)$/) &&
+                (u.pathname.match(/\/(?:embed|shorts|v)\/([\w-]{11})/) || (u.searchParams.get('v') || '').match(/^([\w-]{11})$/) || (u.hostname === 'youtu.be' && u.pathname.match(/^\/([\w-]{11})/)));
+            if (yt) {
+                provider = 'youtube';
+                thumb = thumb || 'https://i.ytimg.com/vi/' + yt[1] + '/hqdefault.jpg';
+                watch = 'https://www.youtube.com/watch?v=' + yt[1];
+            } else if (/(?:^|\.)vimeo\.com$/.test(u.hostname)) {
+                const id = u.pathname.match(/\/(?:video\/)?(\d+)/);
+                if (!id) return;
+                provider = 'vimeo'; watch = 'https://vimeo.com/' + id[1];
+            } else if (/(?:^|\.)(?:wistia\.(?:com|net)|loom\.com|dailymotion\.com|streamable\.com|player\.twitch\.tv|tiktok\.com|facebook\.com\/plugins\/video)/.test(u.hostname + u.pathname)) {
+                provider = u.hostname.replace(/^(www|player|fast|embed)\./, '').split('.')[0];
+            }
+            if (!provider) return;
+            addAsset(watch, 'video', null, { format: provider, embed: true, poster: thumb, title: title || null });
+        }
+        deepQueryAll('iframe[src], iframe[data-src], lite-youtube[videoid], [data-youtube-id], [data-video-id][data-provider]').forEach(el => {
+            const id = el.getAttribute('videoid') || el.getAttribute('data-youtube-id');
+            if (id) addEmbed('https://www.youtube.com/embed/' + id, el.getAttribute('title'));
+            else addEmbed(el.getAttribute('src') || el.getAttribute('data-src'), el.getAttribute('title'));
+        });
+
+        // Everything the page has already downloaded: catches videos added by
+        // JavaScript players and the playlists behind streamed (blob:) video
+        try {
+            performance.getEntriesByType('resource').forEach(entry => {
+                const name = entry.name;
+                if (!/^https?:/.test(name)) return;
+                const kind = mediaKind(name) || (entry.initiatorType === 'video' || entry.initiatorType === 'audio' ? entry.initiatorType : null);
+                if (!kind || (kind !== 'stream' && SEGMENT.test(name))) return;
+                addMedia(name, kind);
+            });
+        } catch (e) { }
+        // A real playlist or file was found: drop the "streamed video" placeholders
+        const placeholders = Array.from(assets.values()).filter(a => a.streamOnly);
+        if (placeholders.length && Array.from(assets.values()).some(a => a.stream || (a.type === 'video' && !a.streamOnly && !a.embed))) {
+            placeholders.forEach(a => assets.delete(a.url));
+        }
 
         // 3. Links (Icons, Stylesheets for fonts etc.)
         document.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]').forEach(link => {
@@ -477,6 +616,17 @@
         .asset-actions a { padding: 0 5px; }
         .asset-actions a:hover, .asset-dl:hover { background: rgba(79,209,197,0.1); border-color: rgba(79,209,197,0.35); text-decoration: none; }
         .asset-dl:disabled { opacity: 0.5; cursor: default; }
+        .asset-copy { padding: 0 5px; }
+        .asset-copy.copied { color: #7ee2a8; border-color: rgba(126,226,168,0.4); }
+        .asset-preview video { width: 100%; height: 100%; background: #000; }
+        .asset-preview .audio-player { position: absolute; left: 6px; right: 6px; bottom: 6px; width: calc(100% - 12px); height: 32px; }
+        .play-overlay {
+            position: absolute; inset: 0; margin: auto; width: 44px; height: 44px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.6); color: #fff; border: 1px solid rgba(255,255,255,0.25);
+            transition: transform 0.15s, background 0.15s;
+        }
+        .play-overlay:hover { transform: scale(1.08); background: rgba(0,0,0,0.8); }
         .badge.lottie { background: rgba(79,209,197,0.9); color: #07201d; font-weight: 600; }
         .asset-preview > div { width: 100%; height: 100%; }
         .lottie-card { height: 222px; }
@@ -951,6 +1101,7 @@
             add('JSON', 'download', 'Lottie JSON: use with any Lottie player, LottieFiles or After Effects (Bodymovin)', () => saveLottieJson(asset));
             if (asset.dotLottie) add('.lottie', 'download', 'The original .lottie file', () => downloadOne(asset, asset.baseName + '.lottie', { disabled: false }));
             add('HTML', 'player-play', 'A web page that plays the animation on its own', () => saveLottieHtml(asset));
+            actions.appendChild(copyButton(asset, true));
         }
         card.appendChild(preview);
         card.appendChild(badge);
@@ -967,9 +1118,52 @@
                 if (a.state !== 'ok') return false;
             }
             if (currentFilter === 'all') return true;
-            if (currentFilter === 'video' && a.type === 'audio') return true;
+            if (currentFilter === 'video' && (a.type === 'audio' || a.type === 'subtitle')) return true;
             return a.type === currentFilter;
         });
+    }
+
+    // Copy: SVG markup for embedded vectors, the address for everything else
+    function copyPayload(asset) {
+        if (asset.type === 'vector' && asset.isDataUri) {
+            try { return { text: decodeURIComponent(asset.url.split(',').slice(1).join(',')), what: 'SVG code' }; } catch (e) { }
+        }
+        if (asset.type === 'lottie' && asset.jsonText) return { text: asset.jsonText, what: 'Lottie JSON' };
+        return { text: asset.url, what: asset.embed ? 'Video link' : asset.stream ? 'Stream URL' : 'URL' };
+    }
+
+    async function copyText(text) {
+        try { await navigator.clipboard.writeText(text); return true; } catch (e) { }
+        // Fallback for pages where the async clipboard is blocked
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:-9999px;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { }
+        ta.remove();
+        return ok;
+    }
+
+    function copyButton(asset, withLabel) {
+        const p = copyPayload(asset);
+        const btn = document.createElement('button');
+        btn.className = 'asset-dl asset-copy';
+        btn.title = 'Copy ' + p.what;
+        btn.setAttribute('aria-label', btn.title);
+        const idle = ic('copy', 13) + (withLabel ? 'Copy' : '');
+        btn.innerHTML = idle;
+        btn.addEventListener('click', async () => {
+            const ok = await copyText(p.text);
+            showToast(ok ? p.what + ' copied' : 'Could not copy', ok ? 1500 : 3000);
+            if (!ok) return;
+            btn.innerHTML = ic('check', 13) + (withLabel ? 'Copied' : '');
+            btn.classList.add('copied');
+            setTimeout(() => { btn.innerHTML = idle; btn.classList.remove('copied'); }, 1400);
+        });
+        return btn;
     }
 
     function renderAssetGrid() {
@@ -984,27 +1178,76 @@
             const card = document.createElement('div');
             card.className = 'asset-card';
 
-            const filename = getFileName(asset.url, asset.format, asset.isDataUri);
+            const noFile = asset.embed || asset.streamOnly;
+            const filename = noFile ? (asset.title || asset.url) : getFileName(asset.url, asset.format, asset.isDataUri);
+            const typeSpan = document.createElement('span');
+            typeSpan.textContent = asset.embed ? 'embed' : asset.stream ? 'stream' : asset.streamOnly ? 'streamed' : asset.type;
 
             // Container for preview
             const previewContainer = document.createElement('div');
             previewContainer.className = 'asset-preview';
+            const label = (icon, text) => {
+                const d = document.createElement('div');
+                d.className = 'preview-label';
+                d.innerHTML = ic(icon, 24);
+                d.appendChild(document.createTextNode(text));
+                return d;
+            };
+            const posterOr = (icon, text) => {
+                if (!asset.poster) { previewContainer.appendChild(label(icon, text)); return; }
+                const img = document.createElement('img');
+                img.src = asset.poster;
+                img.loading = 'lazy';
+                img.onerror = () => img.replaceWith(label(icon, text));
+                previewContainer.appendChild(img);
+            };
 
             if (asset.type === 'image' || asset.type === 'vector') {
                 const img = document.createElement('img');
                 img.src = asset.url;
                 img.loading = 'lazy';
                 previewContainer.appendChild(img);
+            } else if (asset.embed) {
+                posterOr('player-play', asset.format);
+                const play = document.createElement('a');
+                play.className = 'play-overlay';
+                play.href = asset.url;
+                play.target = '_blank';
+                play.rel = 'noopener noreferrer';
+                play.title = 'Watch on ' + asset.format;
+                play.innerHTML = ic('player-play', 22);
+                previewContainer.appendChild(play);
+            } else if (asset.streamOnly) {
+                posterOr('player-play', 'Streamed, no direct file');
+            } else if (asset.stream) {
+                posterOr('player-play', asset.format === 'mpd' ? 'DASH stream' : 'HLS stream');
             } else if (asset.type === 'video') {
+                // Playable right in the panel
                 const video = document.createElement('video');
                 video.src = asset.url;
                 video.preload = 'metadata';
+                video.controls = true;
+                video.muted = true;
+                video.playsInline = true;
+                video.loop = true;
+                if (asset.poster) video.poster = asset.poster;
+                video.addEventListener('loadedmetadata', () => {
+                    const d = video.duration;
+                    const time = isFinite(d) ? Math.floor(d / 60) + ':' + String(Math.round(d % 60)).padStart(2, '0') : '';
+                    typeSpan.textContent = [video.videoWidth ? video.videoWidth + '×' + video.videoHeight : 'video', time].filter(Boolean).join(' · ');
+                });
+                video.addEventListener('error', () => { video.replaceWith(label('photo-off', 'No preview')); });
                 previewContainer.appendChild(video);
             } else if (asset.type === 'audio') {
-                const audioDiv = document.createElement('div');
-                audioDiv.className = 'preview-label';
-                audioDiv.innerHTML = ic('headphones', 24) + 'Audio';
-                previewContainer.appendChild(audioDiv);
+                const audio = document.createElement('audio');
+                audio.src = asset.url;
+                audio.preload = 'none';
+                audio.controls = true;
+                audio.className = 'audio-player';
+                previewContainer.appendChild(label('headphones', 'Audio'));
+                previewContainer.appendChild(audio);
+            } else if (asset.type === 'subtitle') {
+                previewContainer.appendChild(label('file-text', 'Subtitles'));
             } else if (asset.type === 'font') {
                 const fontDiv = document.createElement('div');
                 fontDiv.style.fontSize = '32px';
@@ -1012,10 +1255,7 @@
                 fontDiv.textContent = 'Aa';
                 previewContainer.appendChild(fontDiv);
             } else {
-                const unkDiv = document.createElement('div');
-                unkDiv.className = 'preview-label';
-                unkDiv.innerHTML = ic('help-circle', 24) + 'Unknown';
-                previewContainer.appendChild(unkDiv);
+                previewContainer.appendChild(label('help-circle', 'Unknown'));
             }
 
             // Badge
@@ -1034,16 +1274,18 @@
 
             const metaDiv = document.createElement('div');
             metaDiv.className = 'asset-meta';
-            const typeSpan = document.createElement('span');
-            typeSpan.textContent = asset.type;
             const actions = document.createElement('div');
             actions.className = 'asset-actions';
-            const saveOne = document.createElement('button');
-            saveOne.className = 'asset-dl';
-            saveOne.title = 'Download ' + filename;
-            saveOne.setAttribute('aria-label', 'Download ' + filename);
-            saveOne.innerHTML = ic('download', 13) + 'Save';
-            saveOne.addEventListener('click', () => downloadOne(asset, filename, saveOne));
+            if (!noFile) {
+                const saveOne = document.createElement('button');
+                saveOne.className = 'asset-dl';
+                saveOne.title = asset.stream ? 'Download the playlist file' : 'Download ' + filename;
+                saveOne.setAttribute('aria-label', saveOne.title);
+                saveOne.innerHTML = ic('download', 13) + 'Save';
+                saveOne.addEventListener('click', () => downloadOne(asset, filename, saveOne));
+                actions.appendChild(saveOne);
+            }
+            actions.appendChild(copyButton(asset));
             const openLink = document.createElement('a');
             openLink.href = asset.url;
             openLink.target = '_blank';
@@ -1051,7 +1293,7 @@
             openLink.title = 'Open in new tab';
             openLink.setAttribute('aria-label', 'Open ' + filename + ' in new tab');
             openLink.innerHTML = ic('external-link', 13);
-            actions.appendChild(saveOne);
+            if (asset.isDataUri) openLink.style.display = 'none';
             actions.appendChild(openLink);
             metaDiv.appendChild(typeSpan);
             metaDiv.appendChild(actions);
@@ -1120,6 +1362,7 @@
                     'vector': 'svgs',
                     'video': 'media',
                     'audio': 'media',
+                    'subtitle': 'media',
                     'font': 'fonts'
                 };
                 if (asset.type === 'lottie') {
@@ -1128,6 +1371,7 @@
                     successCount++;
                     return;
                 }
+                if (asset.embed || asset.streamOnly) return; // a link, not a file
                 const folderName = folderMap[asset.type] || 'misc';
                 const safeName = folderName + '/' + filename.replace(/[^a-z0-9.-]/gi, '_');
 

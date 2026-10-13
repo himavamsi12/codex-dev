@@ -17,6 +17,7 @@
                 <h1>Codex Dev</h1>
                 <p class="subtitle">Developer's Insight Tool</p>
             </div>
+            <button class="icon-btn header-info" id="shortcuts-btn" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"><i data-icon="info-circle" data-size="16"></i></button>
         </header>
 
         <nav class="popup-tabs" role="tablist">
@@ -31,7 +32,7 @@
                     <span class="tool-icon"><i data-icon="ruler-measure" data-size="18"></i></span>
                     <span class="tool-copy">
                         <span class="tool-name">Design Inspector <span class="badge-new">New</span></span>
-                        <span class="tool-desc">Guides, spacing, fonts, flexbox, colors and accessibility. Press Alt+Shift+I</span>
+                        <span class="tool-desc">Guides, spacing, fonts, flexbox, colors and accessibility<span id="inspector-key-hint"></span></span>
                     </span>
                     <span class="tool-chevron"><i data-icon="chevron-right"></i></span>
                 </button>
@@ -54,15 +55,6 @@
                     <span class="tool-chevron"><i data-icon="chevron-right"></i></span>
                 </button>
 
-                <button class="tool-row" id="toggle-seo-tools">
-                    <span class="tool-icon"><i data-icon="world-search" data-size="18"></i></span>
-                    <span class="tool-copy">
-                        <span class="tool-name">SEO &amp; Insights</span>
-                        <span class="tool-desc">Audit meta tags, headings &amp; structured data</span>
-                    </span>
-                    <span class="tool-chevron"><i data-icon="chevron-right"></i></span>
-                </button>
-
                 <button class="tool-row" id="toggle-capture">
                     <span class="tool-icon"><i data-icon="camera" data-size="18"></i></span>
                     <span class="tool-copy">
@@ -80,6 +72,15 @@
                     </span>
                     <span class="tool-chevron"><i data-icon="chevron-right"></i></span>
                 </button>
+
+                <button class="tool-row" id="toggle-mcp">
+                    <span class="tool-icon"><i data-icon="link" data-size="18"></i></span>
+                    <span class="tool-copy">
+                        <span class="tool-name">Claude Code <span class="badge-new">New</span></span>
+                        <span class="tool-desc">Let Claude Code audit and debug pages you allow</span>
+                    </span>
+                    <span class="tool-chevron"><i data-icon="chevron-right"></i></span>
+                </button>
             </div>
             <p class="tools-status" id="tools-status" role="alert" hidden></p>
         </div>
@@ -89,11 +90,14 @@
             <section class="quick-launch">
                 <h2>Quick Launch</h2>
                 <div class="preset-grid">
-                    <button class="preset-btn" data-devices='["iPhone 14 Pro", "iPad Air", "Desktop (1920x1080)"]'>
-                        <span class="preset-icon"><i data-icon="devices" data-size="18"></i></span>
-                        <span class="preset-name">Popular Mix</span>
-                        <span class="preset-meta">Phone, tablet, desktop</span>
-                    </button>
+                    <div class="preset-card">
+                        <button class="preset-btn" id="mix-launch">
+                            <span class="preset-icon"><i data-icon="devices" data-size="18"></i></span>
+                            <span class="preset-name">Popular Mix</span>
+                            <span class="preset-meta" id="mix-meta">Phone, tablet, desktop</span>
+                        </button>
+                        <button class="preset-edit" id="mix-edit" type="button" aria-label="Edit Popular Mix" title="Choose the devices"><i data-icon="pencil" data-size="14"></i></button>
+                    </div>
                     <button class="preset-btn" data-devices='["iPhone 14 Pro", "iPhone SE", "Samsung Galaxy S23"]'>
                         <span class="preset-icon"><i data-icon="device-mobile" data-size="18"></i></span>
                         <span class="preset-name">Mobile Only</span>
@@ -196,10 +200,115 @@
 
             <p class="sheet-status" id="cap-status" role="status"></p>
         </div>
+
+        <!-- Claude Code bridge sheet -->
+        <div class="sheet" id="shortcuts-panel" hidden>
+            <div class="sheet-header">
+                <button class="icon-btn" id="shortcuts-close" aria-label="Back"><i data-icon="x"></i></button>
+                <h2>Keyboard shortcuts</h2>
+            </div>
+            <div class="sheet-group">
+                <span class="group-label">Anywhere in Chrome</span>
+                <dl class="key-list" id="global-keys"></dl>
+                <button class="custom-btn mcp-secondary" id="shortcuts-change" type="button">Change shortcuts</button>
+            </div>
+            <div class="sheet-group">
+                <span class="group-label">In this popup <span class="group-sub">(same on Windows and Mac)</span></span>
+                <dl class="key-list">
+                    <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Switch between Tools and Launch Viewer</dd></div>
+                    <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move between tools, presets and devices</dd></div>
+                    <div><dt><kbd>Enter</kbd></dt><dd>Open the selected item</dd></div>
+                    <div><dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Open a tool (Tools)</dd></div>
+                    <div><dt><kbd>1</kbd>–<kbd>4</kbd></dt><dd>Quick Launch preset (Launch Viewer)</dd></div>
+                    <div><dt><kbd>E</kbd></dt><dd>Edit the Popular Mix</dd></div>
+                    <div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div>
+                    <div><dt><kbd>Esc</kbd></dt><dd>Go back, or close the popup</dd></div>
+                </dl>
+            </div>
+        </div>
+
+        <div class="sheet" id="mix-panel" hidden>
+            <div class="sheet-header">
+                <button class="icon-btn" id="mix-close" aria-label="Back"><i data-icon="x"></i></button>
+                <h2>Popular Mix</h2>
+            </div>
+            <p class="sheet-note">Quick Launch opens these devices, and Claude Code tests them when you say <b>"check responsive"</b>. Up to 12.</p>
+            <div class="sheet-group">
+                <span class="group-label" id="mix-count">Your devices</span>
+                <ul class="mix-chips" id="mix-chips"></ul>
+            </div>
+            <div class="sheet-group">
+                <span class="group-label">Add devices</span>
+                <input class="mix-search" id="mix-search" type="search" placeholder="Search, e.g. Galaxy S24" aria-label="Search devices" autocomplete="off">
+                <div class="mix-list" id="mix-list" role="group" aria-label="Devices"></div>
+            </div>
+            <p class="sheet-status" id="mix-status" role="status"></p>
+            <button class="custom-btn mcp-secondary" id="mix-reset" type="button">Reset to default</button>
+        </div>
+
+        <div class="sheet" id="mcp-panel" hidden>
+            <div class="sheet-header">
+                <button class="icon-btn" id="mcp-close" aria-label="Back"><i data-icon="x"></i></button>
+                <h2>Claude Code</h2>
+            </div>
+            <p class="sheet-note">In Claude Code say <b>"Connect Codex Dev"</b>; it gives you a 6-digit code to enter below. Connects to the MCP server on this computer (127.0.0.1). Claude Code can only inspect tabs you allow below. See <code>mcp-server/README.md</code>.</p>
+
+
+            <details class="mcp-setup">
+                <summary>First time? Register the server with Claude Code</summary>
+                <ol class="mcp-steps">
+                    <li>
+                        <b>Build the server once</b>, from the repo root:
+                        <div class="mcp-cmd"><code>cd mcp-server &amp;&amp; npm install &amp;&amp; npm run build</code><button class="mcp-copy" type="button">Copy</button></div>
+                    </li>
+                    <li>
+                        <b>Register it with Claude Code.</b> Shared with anyone who opens this repo (run from the repo root):
+                        <div class="mcp-cmd"><code>claude mcp add --scope project codex-dev -- node mcp-server/dist/index.js</code><button class="mcp-copy" type="button">Copy</button></div>
+                        Or just for you, from any folder (use the full path):
+                        <div class="mcp-cmd"><code>claude mcp add codex-dev -- node /full/path/to/codex-dev/mcp-server/dist/index.js</code><button class="mcp-copy" type="button">Copy</button></div>
+                    </li>
+                    <li>
+                        Check it with <code>claude mcp list</code>. It should show <code>codex-dev</code> as connected. For a project-scope server, Claude Code asks you to approve it the first time you run <code>claude</code> in that folder.
+                    </li>
+                    <li>
+                        <b>Install the website-check skill</b> (optional, once): Claude then checks breakpoints, fonts, accessibility and section spacing, and asks before fixing.
+                        <div class="mcp-cmd"><code>node mcp-server/dist/index.js install-skill</code><button class="mcp-copy" type="button">Copy</button></div>
+                    </li>
+                    <li>
+                        Then say <b>"Connect Codex Dev"</b> in Claude Code and enter the code below. Claude Code starts and stops the server itself, so you never run it by hand.
+                    </li>
+                </ol>
+            </details>
+
+            <div class="sheet-group">
+                <span class="group-label">Connection <span class="mcp-dot" id="mcp-dot" aria-hidden="true"></span></span>
+                <div class="custom-inputs">
+                    <div class="input-group">
+                        <label for="mcp-port">Port</label>
+                        <input type="number" id="mcp-port" min="1024" max="65535" value="17373">
+                    </div>
+                    <div class="input-group">
+                        <label for="mcp-token">Pairing code</label>
+                        <input type="password" id="mcp-token" autocomplete="off" spellcheck="false" placeholder="6-digit code">
+                    </div>
+                </div>
+                <button class="custom-btn" id="mcp-toggle">Connect</button>
+            </div>
+
+            <div class="sheet-group">
+                <span class="group-label">This tab</span>
+                <button class="custom-btn mcp-secondary" id="mcp-tab-toggle">Allow on this tab</button>
+                <p class="sheet-note">Allowing a tab attaches Chrome's debugger (you will see its banner) so Claude Code can set the viewport, take screenshots and read console and network errors. Authorization ends when you navigate to another site or close the tab.</p>
+                <p class="sheet-note">Then try: <b>"Check my site with Codex Dev."</b> Claude uses the same devices as the Responsive Viewer (iPhone 14 Pro, iPad Air, Desktop 1920×1080).</p>
+            </div>
+
+            <p class="sheet-status" id="mcp-status" role="status"></p>
+        </div>
     </div>
 
     <script src="utils/icons.js"></script>
     <script src="devices.js"></script>
+    <script src="popular-mix.js"></script>
     <script src="popup.js"></script>
 </body>
 

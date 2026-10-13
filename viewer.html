@@ -7,6 +7,7 @@
     <title>Codex Dev</title>
     <link rel="stylesheet" href="tokens.css">
     <link rel="stylesheet" href="viewer.css">
+    <link rel="stylesheet" href="edit-panel.css">
 </head>
 
 <body>
@@ -34,6 +35,12 @@
                 </div>
             </div>
             <div class="header-right">
+                <button class="control-btn has-label" id="responsive-audit" title="Find and fix layout problems on every device">
+                    <i data-icon="bug" data-size="18"></i><span>Audit</span>
+                </button>
+                <button class="control-btn has-label" id="edit-mode" title="Select an element and describe a change to apply to your source code" aria-pressed="false">
+                    <i data-icon="pointer" data-size="18"></i><span>Edit</span>
+                </button>
                 <button class="control-btn has-label" id="add-device" title="Add Device">
                     <i data-icon="plus" data-size="18"></i><span>Add Device</span>
                 </button>
@@ -111,6 +118,7 @@
         </main>
     </div>
 
+    <script src="ai/feature-flags.js"></script>
     <script src="utils/icons.js"></script>
     <script src="utils/codex-ui.js"></script>
     <script src="data/user-agents.js"></script>
@@ -119,6 +127,10 @@
 
     <script src="design-tools.js"></script>
     <script src="performance-tools.js"></script>
+    <script src="design-ai/core.js"></script>
+    <script src="design-ai/responsive-fix.js"></script>
+    <script src="responsive-audit.js"></script>
+    <script src="edit-panel.js"></script>
     <script src="viewer.js"></script>
     <script src="device-selector.js"></script>
 </body>

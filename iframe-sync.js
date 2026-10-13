@@ -93,14 +93,51 @@
     let lastReport = 0;
     let trailingReport = null;
 
-    function reportScroll() {
+    // Devices are matched by content, not by percentage: a phone page is far
+    // taller than the desktop one, so the same percentage shows different
+    // content and moves each device at a different speed. The reported anchor
+    // is the element under a reading line 30% down the viewport, plus how far
+    // through it that line is; the other devices put the same point of the
+    // same element on their own reading line.
+    const READ_LINE = 0.3;
+    let anchorCache = { el: null, path: '' };
+
+    function scrollMetrics() {
         const maxX = document.documentElement.scrollWidth - window.innerWidth;
         const maxY = document.documentElement.scrollHeight - window.innerHeight;
-        window.parent.postMessage({
+        return { maxX, maxY };
+    }
+
+    function findAnchor() {
+        const lineY = window.innerHeight * READ_LINE;
+        let el = document.elementFromPoint(window.innerWidth / 2, lineY);
+        while (el && el !== document.body && el !== document.documentElement) {
+            const cs = getComputedStyle(el);
+            // A fixed header or overlay doesn't move with the page
+            if (cs.position === 'fixed' || cs.position === 'sticky') return null;
+            const r = el.getBoundingClientRect();
+            if (r.height >= 24 && cs.display !== 'inline' && r.top <= lineY && r.bottom >= lineY) {
+                if (anchorCache.el !== el) anchorCache = { el, path: getDomPath(el) };
+                return { path: anchorCache.path, frac: (lineY - r.top) / r.height };
+            }
+            el = el.parentElement;
+        }
+        return null;
+    }
+
+    function reportScroll() {
+        const { maxX, maxY } = scrollMetrics();
+        const msg = {
             type: 'IFRAME_SCROLL',
             scrollPercentX: maxX > 0 ? window.scrollX / maxX : 0,
             scrollPercentY: maxY > 0 ? window.scrollY / maxY : 0
-        }, VIEWER_ORIGIN);
+        };
+        // At the very top or bottom the percentage is exact; use it
+        if (msg.scrollPercentY > 0.002 && msg.scrollPercentY < 0.998) {
+            const a = findAnchor();
+            if (a) { msg.anchor = a.path; msg.anchorFrac = a.frac; }
+        }
+        window.parent.postMessage(msg, VIEWER_ORIGIN);
     }
 
     // Scroll events already arrive at most once per repaint; report them right
@@ -117,19 +154,47 @@
         trailingReport = setTimeout(reportScroll, 50);
     }, { passive: true });
 
+    let resolvedAnchor = { path: '', el: null };
+    function anchorTarget(data) {
+        if (!data.anchor) return null;
+        let el = resolvedAnchor.path === data.anchor && resolvedAnchor.el && resolvedAnchor.el.isConnected ? resolvedAnchor.el : null;
+        if (!el) {
+            try { el = findElement(data.anchor); } catch (e) { el = null; }
+            resolvedAnchor = { path: data.anchor, el };
+        }
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        if (!r.height) return null; // hidden at this size
+        const pos = getComputedStyle(el).position;
+        if (pos === 'fixed' || pos === 'sticky') return null;
+        return window.scrollY + r.top + (data.anchorFrac || 0) * r.height - window.innerHeight * READ_LINE;
+    }
+
+    // Apply at most once per frame, always the newest position
+    let pendingSync = null;
+    let syncFrame = 0;
     function applySyncScroll(data) {
-        const maxX = document.documentElement.scrollWidth - window.innerWidth;
-        const maxY = document.documentElement.scrollHeight - window.innerHeight;
+        pendingSync = data;
         applyingSync = true;
         clearTimeout(applyingTimer);
         // Ignore our own scroll events until the incoming stream pauses
-        applyingTimer = setTimeout(() => { applyingSync = false; }, 120);
+        applyingTimer = setTimeout(() => { applyingSync = false; }, 150);
+        if (!syncFrame) syncFrame = requestAnimationFrame(flushSyncScroll);
+    }
+
+    function flushSyncScroll() {
+        syncFrame = 0;
+        const data = pendingSync;
+        pendingSync = null;
+        if (!data) return;
+        const { maxX, maxY } = scrollMetrics();
+        let top = anchorTarget(data);
+        if (top == null) top = (data.scrollPercentY || 0) * maxY;
+        top = Math.round(Math.min(Math.max(0, top), Math.max(0, maxY)));
+        const left = Math.round(Math.max(0, (data.scrollPercentX || 0) * maxX));
+        if (Math.abs(top - window.scrollY) < 1 && Math.abs(left - window.scrollX) < 1) return;
         // 'instant' overrides sites that set scroll-behavior: smooth
-        window.scrollTo({
-            left: Math.max(0, (data.scrollPercentX || 0) * maxX),
-            top: Math.max(0, (data.scrollPercentY || 0) * maxY),
-            behavior: 'instant'
-        });
+        window.scrollTo({ left, top, behavior: 'instant' });
     }
 
     // --- CLICK & INPUT SYNC ---
@@ -229,6 +294,75 @@
     }
 
     // --- MESSAGE LISTENER ---
+    // --- RESPONSIVE AUDIT (probes + numbered pins, driven by the viewer's Audit drawer) ---
+    // Only these read-only probes (and the CSS preview patch) can be requested.
+    const RA_PROBES = ['audit', 'fingerprint', 'inspect', 'styles', 'patch', 'clearPatch', 'waitStable'];
+    const RA_COLORS = { high: '#f07575', medium: '#e8a64a', low: '#6fb3ec', info: '#4fd1c5' };
+    let raHost = null, raRoot = null, raMarks = [], raWatch = false;
+
+    function raEnsureHost() {
+        if (raHost && raHost.isConnected) return;
+        raHost = document.createElement('codex-ra-marks');
+        raHost.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;z-index:2147483646;pointer-events:none;';
+        raRoot = raHost.attachShadow({ mode: 'closed' });
+        document.documentElement.appendChild(raHost);
+    }
+
+    // Marks follow their element when it can still be found, else use the audited box
+    function raLayout() {
+        if (!raRoot) return;
+        raRoot.replaceChildren();
+        raMarks.forEach(m => {
+            let r = null;
+            try { const el = m.selector && document.querySelector(m.selector); if (el) { const b = el.getBoundingClientRect(); if (b.width || b.height) r = { x: b.left + scrollX, y: b.top + scrollY, w: b.width, h: b.height }; } } catch (e) { /* bad selector: use the stored box */ }
+            if (!r && m.rect) r = { x: m.rect.x, y: m.rect.y, w: m.rect.width, h: m.rect.height };
+            if (!r) return;
+            const color = RA_COLORS[m.severity] || RA_COLORS.info;
+            const box = document.createElement('div');
+            box.dataset.id = m.id;
+            box.style.cssText = `position:absolute;left:${r.x}px;top:${r.y}px;width:${Math.max(r.w, 4)}px;height:${Math.max(r.h, 4)}px;outline:2px solid ${color};outline-offset:-1px;background:${color}1f;box-sizing:border-box;border-radius:3px;`;
+            const badge = document.createElement('span');
+            badge.textContent = String(m.n);
+            badge.style.cssText = `position:absolute;left:-2px;top:-2px;transform:translateY(-100%);min-width:18px;height:18px;padding:0 5px;box-sizing:border-box;border-radius:9px 9px 9px 0;background:${color};color:#101114;font:700 11px/18px -apple-system,system-ui,sans-serif;text-align:center;`;
+            box.appendChild(badge);
+            raRoot.appendChild(box);
+        });
+    }
+
+    function raMark(marks) {
+        raEnsureHost();
+        raMarks = (marks || []).map(m => ({ id: String(m.id), n: m.n, selector: typeof m.selector === 'string' ? m.selector.slice(0, 300) : '', severity: m.severity, rect: m.rect }));
+        raLayout();
+        if (!raWatch) { raWatch = true; window.addEventListener('resize', () => raLayout()); }
+    }
+
+    function raFocus(id) {
+        const m = raMarks.find(x => x.id === id);
+        if (!m) return false;
+        let el = null;
+        try { el = m.selector && document.querySelector(m.selector); } catch (e) { /* stored box only */ }
+        if (el) el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+        else if (m.rect) window.scrollTo({ top: Math.max(0, m.rect.y - innerHeight / 3), behavior: 'smooth' });
+        const box = raRoot && raRoot.querySelector(`[data-id="${CSS.escape(id)}"]`);
+        if (box && box.animate) box.animate([{ boxShadow: '0 0 0 0 rgba(255,255,255,.9)' }, { boxShadow: '0 0 0 14px rgba(255,255,255,0)' }], { duration: 900, iterations: 2 });
+        return true;
+    }
+
+    async function handleResponsive(data) {
+        try {
+            if (data.type === 'CODEX_RA_PROBE') {
+                if (!RA_PROBES.includes(data.probe) || !self.CodexProbes) return { ok: false, error: 'Probe not available.' };
+                return { ok: true, result: await self.CodexProbes.run(data.probe, data.params || {}) };
+            }
+            if (data.type === 'CODEX_RA_MARK') { raMark(Array.isArray(data.marks) ? data.marks.slice(0, 200) : []); return { ok: true }; }
+            if (data.type === 'CODEX_RA_FOCUS') return { ok: true, found: raFocus(String(data.id)) };
+            if (data.type === 'CODEX_RA_CLEAR') { raMarks = []; raLayout(); return { ok: true }; }
+            return { ok: false, error: 'Unknown request.' };
+        } catch (e) {
+            return { ok: false, error: String((e && e.message) || e).slice(0, 200) };
+        }
+    }
+
     // Only obey the extension's own responsive viewer.
 
     window.addEventListener('message', function (event) {
@@ -238,6 +372,11 @@
             handleCapture(event.data).then(result => {
                 if (result) event.source.postMessage({ type: 'CODEX_CAPTURE_REPLY', id: event.data.id, ...result }, event.origin);
             });
+            return;
+        }
+
+        if (typeof event.data.type === 'string' && event.data.type.startsWith('CODEX_RA_')) {
+            handleResponsive(event.data).then(result => event.source.postMessage({ type: 'CODEX_RA_REPLY', id: event.data.id, ...result }, event.origin));
             return;
         }
 

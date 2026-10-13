@@ -1,0 +1,4 @@
+body { margin: 0; font-family: system-ui, sans-serif; }
+.page { padding: 24px; }
+.cards { display: flex; gap: 16px; }
+.card { flex: 1; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }

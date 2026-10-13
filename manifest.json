@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Codex Dev",
-  "version": "1.5.0",
-  "description": "Developer's Insight Tool - Responsive viewer with device mockups, design inspector, CSS editor, SEO audit, asset extractor and screenshot capture.",
+  "version": "1.6.0",
+  "description": "Web design and dev toolkit: device mockups, design inspector, CSS editor, SEO audit, asset extractor and screenshots.",
   "permissions": [
     "activeTab",
     "tabs",
@@ -13,7 +13,8 @@
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess",
     "webNavigation",
-    "debugger"
+    "debugger",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -44,7 +45,9 @@
         "<all_urls>"
       ],
       "js": [
-        "iframe-sync.js"
+        "bridge/probes.js",
+        "iframe-sync.js",
+        "edit-mode.js"
       ],
       "all_frames": true,
       "run_at": "document_end"
@@ -56,15 +59,32 @@
     "128": "icons/icon128.png"
   },
   "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+D",
+        "windows": "Alt+Shift+D",
+        "mac": "Alt+Shift+D",
+        "linux": "Alt+Shift+D"
+      },
+      "description": "Open Codex Dev"
+    },
+    "open-popular-mix": {
+      "suggested_key": {
+        "default": "Alt+Shift+V",
+        "windows": "Alt+Shift+V",
+        "mac": "Alt+Shift+V",
+        "linux": "Alt+Shift+V"
+      },
+      "description": "Open this page in the Responsive Viewer with your Popular Mix"
+    },
     "toggle-inspector": {
       "suggested_key": {
-        "default": "Alt+Shift+I"
+        "default": "Alt+Shift+I",
+        "windows": "Alt+Shift+I",
+        "mac": "Alt+Shift+I",
+        "linux": "Alt+Shift+I"
       },
       "description": "Toggle the Design Inspector on the current page"
     }
-  },
-  "options_ui": {
-    "page": "ai-settings.html",
-    "open_in_tab": true
   }
 }

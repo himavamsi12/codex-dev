@@ -2,11 +2,11 @@
 //
 // Opened from the Design Inspector's AI button. Reads the inspector's current
 // selection ([data-selected]), sends the elements' HTML + key styles and the
-// user's request to background.js (which calls Claude or OpenAI with the user's own
-// key), then applies the returned edits to the live page with undo.
+// user's request to background.js (which calls the Codex AI service), then
+// applies the returned edits to the live page with undo.
 //
 // Runs in the extension's isolated world on purpose: page scripts can't call
-// chrome.runtime, so they can't trigger requests billed to the user's key.
+// chrome.runtime, so they can't trigger requests that use up the user's daily Codex AI allowance.
 (function () {
     'use strict';
     if (window.__codexAiPanel) return;
@@ -503,9 +503,8 @@
                 <div class="target" data-el="target"></div>
                 <div class="setup" data-el="setup" hidden>
                     <span class="badge">${icon('sparkles', 20)}</span>
-                    <h3>Add your API key</h3>
-                    <p>Codex AI runs on your own Claude (Anthropic) or ChatGPT (OpenAI) API key. Add one in settings to start editing with AI.</p>
-                    <button class="primary" data-el="open-settings">Open settings</button>
+                    <h3>Codex AI is not available yet</h3>
+                    <p>This version of Codex Dev is not connected to the Codex AI service. Update the extension to use it.</p>
                 </div>
                 <div class="thread" data-el="thread">
                     <div class="empty" data-el="empty">
@@ -517,7 +516,7 @@
                     <textarea data-el="input" rows="1" maxlength="2000" placeholder="Describe a change, like “make this button green”" aria-label="Describe a change"></textarea>
                     <button class="primary send" data-el="send" aria-label="Send">${icon('chevron-right', 18)}</button>
                 </form>
-                <p class="foot"><span data-el="foot-text">Runs on your own API key.</span> <button type="button" data-el="settings-link">Settings</button></p>
+                <p class="foot"><span data-el="foot-text">Free Codex AI with a daily limit.</span> <button type="button" data-el="settings-link">Usage</button></p>
             </section>`;
         shadow.querySelectorAll('[data-el]').forEach(n => { els[n.dataset.el] = n; });
 
@@ -529,7 +528,6 @@
         }));
 
         els.close.addEventListener('click', close);
-        els['open-settings'].addEventListener('click', () => rpc({ action: 'AI_OPEN_SETTINGS' }));
         els['settings-link'].addEventListener('click', () => rpc({ action: 'AI_OPEN_SETTINGS' }));
         els.form.addEventListener('submit', e => { e.preventDefault(); if (e.isTrusted !== false) send(els.input.value); });
         els.input.addEventListener('keydown', e => {
@@ -694,7 +692,7 @@
             busy = false;
             els.send.disabled = false;
             addError((response.error && response.error.message) || 'Something went wrong.', () => { els.input.value = instruction; send(instruction); });
-            if (response.error && (response.error.code === 'no_key' || response.error.code === 'auth')) refreshStatus();
+            if (response.error && response.error.code === 'unavailable') refreshStatus();
             return;
         }
 
@@ -764,6 +762,4 @@
     window.addEventListener('codex-ai:toggle', () => { isOpen() ? close() : open(); });
     window.addEventListener('codex-ai:close', close);
     window.addEventListener('codex-inspector:exit', close);
-    // Settings saved in another tab: refresh the key state if the panel is open
-    chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.codexAi && isOpen()) refreshStatus(); });
 })();

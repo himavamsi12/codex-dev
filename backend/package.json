@@ -1,0 +1,17 @@
+{
+  "name": "codex-dev-ai-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Hosted Codex AI for the Codex Dev extension: free daily quota, the API key stays on the server.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "sync": "node scripts/sync-service.mjs",
+    "dev": "node dev-server.mjs",
+    "prebuild": "node scripts/sync-service.mjs",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0"
+  }
+}

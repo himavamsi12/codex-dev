@@ -1,0 +1,19 @@
+{
+  "name": "codex-dev-vite-plugin",
+  "version": "0.1.0",
+  "description": "Dev-only Vite plugin that adds data-source=\"file:line:col\" to JSX elements so Codex Dev can map a clicked element back to your code.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "peerDependencies": { "vite": ">=4" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": { "@babel/parser": "^7.26.0", "magic-string": "^0.30.0" },
+  "devDependencies": { "@types/node": "^26.6.4", "tsx": "^4.23.15", "typescript": "^7.0.2", "vite": "^7.0.0" }
+}

@@ -211,3 +211,37 @@ function updateUrlParams() {
     params.set('devices', encodeURIComponent(JSON.stringify(compact)));
     history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
 }
+
+// Claude Code (bridge/bridge.js) adds devices to an open viewer. Only this extension's
+// service worker can send these, and only to the viewer tab it addressed.
+let viewerTabId = null;
+if (chrome.tabs && chrome.tabs.getCurrent) chrome.tabs.getCurrent(t => { viewerTabId = t ? t.id : null; });
+
+function addDevicesFromClaude(list) {
+    const added = [], alreadyShown = [];
+    (Array.isArray(list) ? list : []).forEach(d => {
+        if (isInTab(d)) { alreadyShown.push(d.name); return; }
+        const device = resolveDevice(d);
+        if (!device.icon) device.icon = CodexIcons.svg('adjustments-horizontal', 24);
+        addViewport(device);
+        added.push(device.name);
+    });
+    if (added.length) CodexUI.toast(`Claude Code added ${added.join(', ')}`, 4000);
+    return { added, alreadyShown, total: viewports.length };
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || sender.id !== chrome.runtime.id) return false;
+    if (msg.type !== 'codex-viewer-add-devices' && msg.type !== 'codex-viewer-audit') return false;
+    if (viewerTabId === null || msg.viewerTabId !== viewerTabId) return false;
+    const shown = addDevicesFromClaude(msg.devices);
+    if (msg.type === 'codex-viewer-add-devices') { sendResponse({ ok: true, ...shown }); return false; }
+    if (!window.ResponsiveAudit) { sendResponse({ ok: false, error: 'The viewer audit is not available.' }); return false; }
+    // Audit only the devices Claude asked for (its list or the Popular Mix), not
+    // every frame the user happens to have open.
+    const requested = (Array.isArray(msg.devices) ? msg.devices : []).map(d => resolveDevice(d).name);
+    ResponsiveAudit.auditForClaude(requested)
+        .then(result => sendResponse({ ok: true, ...shown, result }))
+        .catch(e => sendResponse({ ok: false, error: String(e.message || e).slice(0, 300) }));
+    return true; // answered asynchronously
+});

@@ -18,7 +18,8 @@ function writePref(key, value) {
 }
 
 // Initialize viewer on page load
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    await registerEmbedRules();
     loadAllDevices();
     parseUrlParameters();
     displayUrl();
@@ -34,7 +35,28 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.PerformanceTools) {
         window.PerformanceTools.init();
     }
+
+    // Edit sends changes through Claude Code: hidden with the other AI features
+    if (window.EditPanel && self.CODEX_AI_ENABLED) {
+        window.EditPanel.init();
+    } else {
+        const editBtn = document.getElementById('edit-mode');
+        if (editBtn) editBtn.hidden = true;
+    }
+
+    if (window.ResponsiveAudit) {
+        window.ResponsiveAudit.init();
+    }
 });
+
+// Sites that send X-Frame-Options or frame-ancestors only load in the frames
+// once the background has applied its header rules to this tab.
+function registerEmbedRules() {
+    return Promise.race([
+        chrome.runtime.sendMessage({ action: 'EMBED_REGISTER' }).catch(() => undefined),
+        new Promise(resolve => setTimeout(resolve, 2000)),
+    ]);
+}
 
 // Parse URL parameters to get devices and target URL
 function parseUrlParameters() {
@@ -610,7 +632,7 @@ function enableScrollSync() {
         if (![...iframes].some(f => f.contentWindow === event.source)) return; // not one of our devices
 
         const message = relayType === 'SYNC_SCROLL'
-            ? { type: relayType, scrollPercentX: event.data.scrollPercentX, scrollPercentY: event.data.scrollPercentY }
+            ? { type: relayType, scrollPercentX: event.data.scrollPercentX, scrollPercentY: event.data.scrollPercentY, anchor: event.data.anchor, anchorFrac: event.data.anchorFrac }
             : relayType === 'SYNC_CLICK'
                 ? { type: relayType, path: event.data.path }
                 : { type: relayType, path: event.data.path, value: event.data.value };

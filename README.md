@@ -74,6 +74,50 @@ A powerful Chrome extension for developers to test websites across multiple devi
 3. Click any element on the webpage
 4. A drag-able editor panel will appear allowing you to visually change CSS properties, freely drag the element, and export the HTML/CSS to CodePen!
 
+## Design Inspector AI
+
+Pick a section on any page, add a reference screenshot (upload or capture), then recreate the look with the manual builder: layout, typography, colours, gradient, borders, shadow, per-breakpoint rules and a width preview. Changes are a temporary live preview with undo/redo/reset, a before/after comparison and CSS/HTML export. "Generate design" reports that no provider is configured; the provider interface is in `design-ai/provider.js`.
+
+**Responsive audit (viewer, Audit button):** audits every open device for layout problems (sideways scrolling, elements sticking out, cut-off text, covered controls, small tap targets, tiny text) and pins each issue on the device where it appears; the checks run locally and need no AI. **Fix with AI** writes a small CSS fix (validated against an allow-list), applies it live to every device, re-audits to show whether it worked, and shows a before/after diff you can copy. **Explain differences** summarises in plain language how the layout changes between the open devices. Logic: `responsive-audit.js`, `design-ai/responsive-fix.js`, `bridge/probes.js`.
+
+**Animate tab (GSAP):** describe the motion in plain words ("fade the cards up one after another when I scroll", "lift on hover") and Codex AI (free, with a daily limit, no API key) returns an animation spec. The spec is validated against an allow-list (properties, eases, selectors, no script), played live with the bundled GSAP + ScrollTrigger (`vendor/gsap`), and exported as paste-ready GSAP code for HTML, React or Next.js. Ask follow-ups ("slower", "only the heading") to refine it. Logic is in `design-ai/animation.js`.
+
+## Claude Code integration (MCP)
+
+Codex Dev can act as a browser-testing tool for Claude Code: responsive audits across viewports, element and CSS inspection, screenshots and diffs, console/network errors, temporary CSS previews and fix verification. It runs through a local MCP server in [`mcp-server/`](mcp-server/README.md), only for tabs you explicitly allow. Setup, tools, permissions and troubleshooting are in that README. Exclude `mcp-server/` when zipping the extension for the Chrome Web Store.
+
+## Edit in Browser (apply changes to your source with Claude Code)
+
+Select an element in any device frame, describe a change ("stack these vertically on mobile only"), review the diff, and accept it. The change is made in your real source files by Claude Code running on your machine, and your dev server hot-reloads every frame.
+
+```
+Codex Dev viewer ──ws://127.0.0.1:17374 + token──▶ codex-dev-bridge (your project root) ──▶ Claude Code (your login)
+   pick element, prompt, diff review                  checkpoint → edit → diff → accept / reject / undo
+```
+
+### Setup
+
+1. **Add the source-mapping plugin** (Vite, dev only): `npm i -D codex-dev-vite-plugin`, then in `vite.config`:
+   ```js
+   import codexDev from "codex-dev-vite-plugin";
+   export default { plugins: [codexDev(), react()] };
+   ```
+   It adds `data-source="src/App.tsx:12:5"` to JSX elements in dev and never touches production builds. See [`packages/vite-plugin`](packages/vite-plugin/README.md).
+2. **Run the bridge from your project root** (a git repository): `npx codex-dev-bridge`. It prints a token. Sign in to Claude Code first with `claude login` (a Claude subscription works) or set `ANTHROPIC_API_KEY`.
+3. **Pair once:** open your dev URL in Codex Dev, click **Edit**, paste the token, **Connect**. The token is kept in `chrome.storage.local`.
+4. Click an element, type the change, **Apply**, then **Accept** or **Reject**. **Undo last edit** reverts accepted edits.
+
+### Supported frameworks and limits
+
+- **Vite + React/TSX/JSX:** exact `file:line:col` mapping. Other Vite JSX frameworks that compile `.jsx/.tsx` should work the same way.
+- **Everything else (Next.js, Vue, Svelte, plain HTML):** no plugin yet, so Claude searches your code using the selector, classes and text. It works, but is less precise. A Next.js (Babel/SWC) plugin is not part of v1.
+- Needs a git repository: checkpoints are git tree snapshots (your index, stash and branches are untouched). Undo refuses to overwrite a file you changed again after the edit.
+- One edit at a time. The bridge only accepts typed edit messages from the extension; it never runs commands from the browser, and Claude Code is limited to reading and editing files inside the project (no shell, `.env`, `.git` or `node_modules`).
+- The agent step uses Claude Code only in v1. Signing in with a ChatGPT account would need an OpenAI Codex CLI runner, which is not built.
+- The element screenshot only works if the element is visible in the viewer window.
+- **Claude Code can also ask what you selected:** `claude mcp add --transport http codex-dev-edit http://127.0.0.1:17374/mcp --header "Authorization: Bearer <token>"` gives it `get_selected_element` and `get_preview_screenshot`.
+- Keep `packages/`, `examples/` and `mcp-server/` out of the Chrome Web Store zip.
+
 ## How It Works (Hybrid Approach)
 
 🎯 **Intelligent Detection**:

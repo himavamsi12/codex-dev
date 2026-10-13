@@ -20,12 +20,12 @@
     // keep page content out of the camera cutout area, so the page is narrower.
     const PROFILES = {
         'iphone-island': {
-            kind: 'phone', os: 'ios', cutout: 'island', pad: [12, 12, 12, 12], screenRadius: 55,
+            kind: 'phone', os: 'ios', cutout: 'island', pad: [9, 9, 9, 9], edge: 4, screenRadius: 55,
             status: 54, top: 0, bottom: 130, homeIndicator: true, buttons: 'iphone',
             land: { status: 0, top: 48, bottom: 21, sides: [59, 59] }
         },
         'iphone-notch': {
-            kind: 'phone', os: 'ios', cutout: 'notch', pad: [12, 12, 12, 12], screenRadius: 47,
+            kind: 'phone', os: 'ios', cutout: 'notch', pad: [10, 10, 10, 10], edge: 4, screenRadius: 47,
             status: 47, top: 0, bottom: 130, homeIndicator: true, buttons: 'iphone',
             land: { status: 0, top: 48, bottom: 21, sides: [47, 47] }
         },
@@ -219,7 +219,7 @@
 
             shell.style.padding = L.pad.map(v => v + 'px').join(' ');
             // Unframed: radii come from CSS so it matches the plain viewport look.
-            const outer = L.screenRadius + Math.min(L.pad[0], L.pad[1]);
+            const outer = L.screenRadius + Math.min(L.pad[0], L.pad[1]) + (p.edge || 0);
             shell.style.borderRadius = !L.framed ? '' : p.base === 'laptop' ? `${outer}px ${outer}px 4px 4px` : outer + 'px';
 
             screen.style.width = L.screenW + 'px';

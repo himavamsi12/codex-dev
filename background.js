@@ -1,10 +1,14 @@
 // Background script — header stripping + screenshot capture
 console.log('Codex Dev: Background script loaded');
 
-// Codex AI engines (bring-your-own-key):
-//   Claude: bundled Anthropic SDK + edit service (tools/ai-build) -> self.CodexAI
-//   OpenAI: ai/openai-service.js -> self.CodexOpenAI (shares CodexAI's prompt)
-importScripts('vendor/claude-service.js', 'ai/openai-service.js');
+// Codex AI is served by the Codex Dev backend (backend/); the URL is in ai/hosted-config.js.
+importScripts('ai/feature-flags.js', 'ai/hosted-config.js');
+const AI_ENABLED = !!self.CODEX_AI_ENABLED;
+
+// Claude Code bridge: dials out to the local MCP server (mcp-server/) when the
+// user enables it in the popup. Idle otherwise.
+// devices.js is the Responsive Viewer's catalog; the bridge serves it to Claude Code.
+importScripts('devices.js', 'popular-mix.js', 'bridge/probes.js', 'bridge/bridge.js');
 
 // ── Viewer-tab tracking ────────────────────────────────────────────
 // Every rule below that used to apply globally (urlFilter: '*', no tab
@@ -43,8 +47,7 @@ function registerViewerTab(tabId) {
 function applyEmbedRules() {
     const tabIds = Array.from(viewerTabIds);
     if (tabIds.length === 0) {
-        chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1, 2] });
-        return;
+        return chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2] });
     }
     const rules = [
         {
@@ -58,11 +61,22 @@ function applyEmbedRules() {
             condition: { resourceTypes: ['sub_frame'], tabIds }
         }
     ];
-    chrome.declarativeNetRequest.updateDynamicRules(
-        { removeRuleIds: [1, 2], addRules: rules },
-        () => { if (chrome.runtime.lastError) console.error('Rules error:', chrome.runtime.lastError); }
-    );
+    return chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1, 2], addRules: rules })
+        .catch(e => console.error('Rules error:', e));
 }
+
+// Rules scoped by tabIds must be session rules: Chrome rejects them as dynamic
+// rules. Remove any dynamic rules with these ids left by older versions, which
+// had no tab scope and would rewrite headers on every site.
+chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1, 2, 999] });
+
+// viewerTabIds lives in memory, so it is empty whenever the service worker
+// restarts or the extension reloads. Re-register viewer tabs that are already
+// open, or their frames lose the header rules ("refused to connect").
+chrome.tabs.query({}).then(tabs => {
+    tabs.filter(isViewerTab).forEach(t => viewerTabIds.add(t.id));
+    applyEmbedRules();
+});
 
 // ── Design Inspector ─────────────────────────────────────────────────
 // Bundled in vendor/inspector (Apache-2.0, see its NOTICE). The toolbar is a
@@ -107,13 +121,19 @@ async function toggleInspector(tabId) {
     if (needsCss) await chrome.scripting.insertCSS({ target, files: [INSPECTOR_DIR + '/inspector.css'] });
 
     // Defines the elements; the bundle skips itself if they already exist.
+    // The toolbar reads this to hide its AI button (ai/feature-flags.js)
+    await chrome.scripting.executeScript({ target, world: 'MAIN', args: [AI_ENABLED], func: (on) => { window.__codexAiOff = !on; } });
     await chrome.scripting.executeScript({ target, world: 'MAIN', files: [INSPECTOR_DIR + '/inspector.js'] });
     await chrome.scripting.executeScript({
         target, world: 'MAIN',
         func: () => document.body.prepend(document.createElement('codex-inspector'))
     });
-    // Codex AI chat panel (isolated world): opened by the toolbar's AI button
-    await chrome.scripting.executeScript({ target, files: ['utils/icons.js', 'ai-panel.js'] });
+    if (AI_ENABLED) {
+        // Design Inspector AI panel (isolated world): opened by the toolbar's AI button.
+        // Lazy: loading it must not open it.
+        await chrome.scripting.executeScript({ target, func: () => { window.__codexDesignAiLazy = true; } });
+        await chrome.scripting.executeScript({ target, files: ['utils/icons.js', 'utils/codex-ui.js', 'vendor/gsap/gsap.min.js', 'vendor/gsap/ScrollTrigger.min.js', 'design-ai/core.js', 'design-ai/provider.js', 'design-ai/animation.js', 'design-ai/engine.js', 'design-ai/panel.js'] });
+    }
 
     // Relay (isolated world, once per page): the toolbar fires
     // 'codex-inspector:exit' on Esc twice; page scripts can't reach the
@@ -132,75 +152,104 @@ async function toggleInspector(tabId) {
 }
 
 // ── Codex AI ─────────────────────────────────────────────────────────
-// Bring your own key: Codex AI runs on the user's own Anthropic (Claude) or
-// OpenAI (ChatGPT models) API key, saved in Codex AI settings
-// (chrome.storage.local 'codexAi'):
-//   { provider: 'anthropic' | 'openai',
-//     anthropic: { apiKey, model }, openai: { apiKey, model } }
-// getAiAccess() is the single gate for AI features, so paid plans can plug
-// in here later. API keys are only ever read here, never sent to pages.
-const AI_ENGINES = {
-    anthropic: { name: 'Anthropic', lib: () => CodexAI },
-    openai: { name: 'OpenAI', lib: () => CodexOpenAI },
-};
+// Codex AI runs on the Codex Dev backend (backend/). The AI key lives on that
+// server; nobody using the extension adds or sees a key. Each install gets a
+// daily number of free requests, counted by a random install ID.
+// getAiAccess() is the single gate for AI features, so paid plans can plug in here later.
+const HOSTED_URL = String((self.CODEX_HOSTED && self.CODEX_HOSTED.url) || '').replace(/\/$/, '');
+const HOSTED_IMAGE_MAX = 3 * 1024 * 1024;
+const UNAVAILABLE = { ok: false, error: { code: 'unavailable', message: 'Codex AI is not available in this version yet.' } };
 
-// Older versions stored a single Anthropic key as { apiKey, model }
-function normalizeAiSettings(raw) {
-    raw = raw || {};
-    const out = {
-        provider: raw.provider === 'openai' ? 'openai' : 'anthropic',
-        anthropic: { ...(raw.anthropic || {}) },
-        openai: { ...(raw.openai || {}) },
-    };
-    if (raw.apiKey && !out.anthropic.apiKey) out.anthropic = { apiKey: raw.apiKey, model: raw.model };
-    return out;
+// Older versions stored the user's own API keys here. They are not used any more: remove them.
+chrome.storage.local.remove('codexAi').catch(() => {});
+
+// Random per-install ID the server counts the daily limit against. Not linked to anything else.
+async function getInstallId() {
+    const { codexInstallId } = await chrome.storage.local.get('codexInstallId');
+    if (codexInstallId) return codexInstallId;
+    const id = crypto.randomUUID();
+    await chrome.storage.local.set({ codexInstallId: id });
+    return id;
 }
 
-async function getAiSettings() {
-    const { codexAi } = await chrome.storage.local.get('codexAi');
-    return normalizeAiSettings(codexAi);
+async function hostedFetch(path, init) {
+    const id = await getInstallId();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 130000);
+    try {
+        const res = await fetch(HOSTED_URL + path, { ...init, headers: { 'Content-Type': 'application/json', 'X-Install-Id': id }, signal: ctrl.signal });
+        const data = await res.json().catch(() => null);
+        return data || { ok: false, error: { code: 'api', message: 'Codex AI returned an unexpected answer. Try again.' } };
+    } catch (e) {
+        return { ok: false, error: { code: 'network', message: 'Could not reach Codex AI. Check your connection and try again.' } };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function hostedRequest(kind, payload) {
+    return hostedFetch('/api/ai', { method: 'POST', body: JSON.stringify({ kind, ...payload }) });
 }
 
 async function getAiAccess() {
-    const settings = await getAiSettings();
-    const provider = settings.provider;
-    const engine = AI_ENGINES[provider];
-    const lib = engine.lib();
-    const conf = settings[provider];
-    const model = conf.model || lib.DEFAULT_MODEL;
-    const known = lib.MODELS.find(m => m.id === model);
-    return {
-        enabled: !!conf.apiKey,
-        reason: conf.apiKey ? null : 'no_key',
-        provider, plan: 'byok', model,
-        modelLabel: known ? known.label.replace(/ \(.*\)$/, '') : model,
-        footer: `Runs on your ${engine.name} API key.`,
-    };
+    if (!AI_ENABLED || !HOSTED_URL) {
+        return { enabled: false, reason: 'unavailable', plan: 'free', modelLabel: '', footer: 'Codex AI is not available in this version yet.' };
+    }
+    return { enabled: true, reason: null, plan: 'free', modelLabel: 'Codex AI', footer: 'Free Codex AI with a daily limit.' };
 }
 
 async function handleAiEdit(message) {
-    const access = await getAiAccess();
-    if (!access.enabled) return { ok: false, error: { code: 'no_key', message: 'Add your Claude or OpenAI API key in Codex AI settings first.' } };
-
+    if (!(await getAiAccess()).enabled) return UNAVAILABLE;
     // Requests are short design instructions, not documents
     const instruction = String(message.instruction || '');
     if (instruction.length > 2000) return { ok: false, error: { code: 'too_long', message: 'That request is too long. Describe the design change in a few sentences.' } };
+    const image = typeof message.image === 'string' && message.image.length <= HOSTED_IMAGE_MAX ? message.image : null;
+    return hostedRequest('edit', {
+        instruction, context: String(message.context || ''),
+        history: Array.isArray(message.history) ? message.history : [], image,
+    });
+}
 
-    const settings = await getAiSettings();
-    const lib = AI_ENGINES[access.provider].lib();
-    try {
-        return await lib.requestEdit({
-            apiKey: settings[access.provider].apiKey,
-            model: access.model,
-            history: Array.isArray(message.history) ? message.history : [],
-            context: String(message.context || ''),
-            instruction,
-            image: typeof message.image === 'string' && message.image.length < 8e6 ? message.image : null,
-        });
-    } catch (e) {
-        console.warn('Codex AI:', e);
-        return { ok: false, error: lib.describeError(e) };
-    }
+// Responsive audit (viewer): "fix" an issue, or "compare" the layouts of the open devices.
+// The context is JSON text built by responsive-audit.js from page probes (no screenshots).
+async function handleAiResponsive(message) {
+    if (!(await getAiAccess()).enabled) return UNAVAILABLE;
+    const kind = message.kind === 'compare' ? 'compare' : message.kind === 'fix' ? 'fix' : null;
+    if (!kind) return { ok: false, error: { code: 'bad_request', message: 'Unknown request.' } };
+    const context = String(message.context || '');
+    if (!context) return { ok: false, error: { code: 'empty', message: 'Nothing to analyse. Run the audit first.' } };
+    if (context.length > 78000) return { ok: false, error: { code: 'too_long', message: 'The page is too large to analyse. Try fewer devices.' } };
+    const instruction = kind === 'fix'
+        ? 'Fix this responsive issue with the smallest CSS change.'
+        : 'Explain in plain language how this page changes between the devices and what breaks.';
+    return hostedRequest(kind, { instruction, context, history: [] });
+}
+
+// Design Inspector AI "Generate design": description (+ optional reference screenshot)
+// -> a CSS patch for the selected section. The panel validates the patch before applying it.
+async function handleAiDesign(message) {
+    if (!(await getAiAccess()).enabled) return UNAVAILABLE;
+    const instruction = String(message.instruction || '').trim();
+    if (!instruction) return { ok: false, error: { code: 'empty', message: 'Describe the design you want first.' } };
+    if (instruction.length > 2000) return { ok: false, error: { code: 'too_long', message: 'That request is too long. Describe the design in a few sentences.' } };
+    const image = typeof message.image === 'string' && /^data:image\/(jpeg|png|webp);base64,/.test(message.image) && message.image.length <= HOSTED_IMAGE_MAX ? message.image : null;
+    return hostedRequest('design', {
+        instruction, context: String(message.context || '').slice(0, 40000),
+        history: Array.isArray(message.history) ? message.history.slice(-8) : [], image,
+    });
+}
+
+// Design Inspector AI "Animate": plain-language request -> GSAP animation spec
+// (data only; the panel validates it before anything runs).
+async function handleAiAnimate(message) {
+    if (!(await getAiAccess()).enabled) return UNAVAILABLE;
+    const instruction = String(message.instruction || '').trim();
+    if (!instruction) return { ok: false, error: { code: 'empty', message: 'Describe the animation you want first.' } };
+    if (instruction.length > 2000) return { ok: false, error: { code: 'too_long', message: 'That request is too long. Describe the animation in a few sentences.' } };
+    return hostedRequest('animate', {
+        instruction, context: String(message.context || '').slice(0, 20000),
+        history: Array.isArray(message.history) ? message.history.slice(-12) : [],
+    });
 }
 
 // Crop the visible tab to rect (CSS px) and shrink it to at most 1280px on
@@ -231,9 +280,17 @@ function inspectorError(e) {
 }
 
 chrome.commands.onCommand.addListener(async command => {
-    if (command !== 'toggle-inspector') return;
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab) toggleInspector(tab.id).catch(e => console.warn('Inspector:', inspectorError(e)));
+    if (!tab) return;
+    if (command === 'toggle-inspector') {
+        toggleInspector(tab.id).catch(e => console.warn('Inspector:', inspectorError(e)));
+    } else if (command === 'open-popular-mix') {
+        // Same as Quick Launch → Popular Mix in the popup; web pages only.
+        if (!/^https?:/.test(tab.url || '')) return;
+        const { devices } = await getPopularMix();
+        const url = chrome.runtime.getURL('viewer.html') + `?devices=${encodeURIComponent(JSON.stringify(devices))}&url=${encodeURIComponent(tab.url)}`;
+        chrome.tabs.create({ url, windowId: tab.windowId, index: tab.index + 1 });
+    }
 });
 
 // ── Message handler ──────────────────────────────────────────────────
@@ -330,6 +387,15 @@ async function checkLink(url) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
+    // The viewer waits for this before loading its frames, so the
+    // X-Frame-Options / CSP rules are in place for the first request.
+    if (message.action === 'EMBED_REGISTER') {
+        if (!sender.tab || !isViewerTab(sender.tab)) { sendResponse({ ok: false }); return; }
+        viewerTabIds.add(sender.tab.id);
+        applyEmbedRules().then(() => sendResponse({ ok: true }));
+        return true;
+    }
+
     // ── Codex AI (from the chat panel content script) ─────────────────
     if (message.action === 'AI_STATUS') {
         getAiAccess().then(sendResponse);
@@ -349,10 +415,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             .catch(() => sendResponse({ image: null }));
         return true;
     }
+    if (message.action === 'AI_USAGE') {
+        // Settings page: how many free requests are left today
+        if (!AI_ENABLED || !HOSTED_URL || sender.id !== chrome.runtime.id) { sendResponse({ ok: false }); return; }
+        hostedFetch('/api/usage', { method: 'GET' }).then(sendResponse);
+        return true;
+    }
     if (message.action === 'AI_OPEN_SETTINGS') {
         chrome.runtime.openOptionsPage();
         sendResponse({ ok: true });
         return;
+    }
+
+    // ── Design Inspector AI (panel in a page) ──────────────────────────
+    // Reference screenshots live in session storage only: in memory, shared
+    // across tabs, cleared when the browser closes. They are never uploaded.
+    if (typeof message.action === 'string' && message.action.indexOf('DESIGN_AI_') === 0) {
+        if (!sender.tab || sender.id !== chrome.runtime.id) { sendResponse({ ok: false, error: 'Not allowed.' }); return; }
+        const reply = p => p.then(r => sendResponse(Object.assign({ ok: true }, r)), e => sendResponse({ ok: false, error: String((e && e.message) || e).slice(0, 200) }));
+        if (message.action === 'DESIGN_AI_REF_GET') {
+            reply(chrome.storage.session.get('designAiReference').then(r => ({ ref: r.designAiReference || null })));
+        } else if (message.action === 'DESIGN_AI_REF_SET') {
+            const ref = message.ref;
+            const okRef = ref && typeof ref.dataUrl === 'string' && /^data:image\/(png|jpeg|webp);base64,/.test(ref.dataUrl) && ref.dataUrl.length <= 8 * 1024 * 1024;
+            if (!okRef) { sendResponse({ ok: false, error: 'Reference image is too large to keep between tabs.' }); return; }
+            reply(chrome.storage.session.set({ designAiReference: {
+                dataUrl: ref.dataUrl, name: String(ref.name || '').slice(0, 120), type: ref.type, width: ref.width | 0, height: ref.height | 0, size: ref.size | 0,
+            } }).then(() => ({})));
+        } else if (message.action === 'DESIGN_AI_REF_CLEAR') {
+            reply(chrome.storage.session.remove('designAiReference').then(() => ({})));
+        } else if (message.action === 'DESIGN_AI_RESPONSIVE') {
+            reply(handleAiResponsive(message).then(r => ({ result: r })));
+        } else if (message.action === 'DESIGN_AI_GENERATE') {
+            reply(handleAiDesign(message).then(r => ({ result: r })));
+        } else if (message.action === 'DESIGN_AI_ANIMATE') {
+            reply(handleAiAnimate(message).then(r => ({ result: r })));
+        } else if (message.action === 'DESIGN_AI_STATUS') {
+            reply(getAiAccess().then(a => ({ enabled: a.enabled, modelLabel: a.modelLabel })));
+        } else if (message.action === 'DESIGN_AI_CAPTURE') {
+            reply(chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' }).then(dataUrl => ({ dataUrl })));
+        } else if (message.action === 'DESIGN_AI_VIEWPORT') {
+            reply(message.reset ? CodexBridge.panelResetViewport(sender.tab.id).then(() => ({})) : CodexBridge.panelViewport(sender.tab.id, message.width, message.height));
+        } else {
+            sendResponse({ ok: false, error: 'Unknown action.' }); return;
+        }
+        return true;
     }
 
     // Inspector closed with Esc twice: bring the Codex Dev popup back
@@ -731,7 +838,7 @@ function updateUserAgentRule(userAgent, tabId) {
 
     if (!userAgent) {
         uaByTab.delete(tabId);
-        chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId], addRules: [] });
+        chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [ruleId], addRules: [] });
         return;
     }
 
@@ -742,7 +849,7 @@ function updateUserAgentRule(userAgent, tabId) {
         action: { type: 'modifyHeaders', requestHeaders: [{ header: 'User-Agent', operation: 'set', value: userAgent }] },
         condition: { tabIds: [tabId], resourceTypes: ['main_frame', 'sub_frame', 'xmlhttprequest', 'script', 'image', 'stylesheet'] }
     };
-    chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId], addRules: [rule] },
+    chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [ruleId], addRules: [rule] },
         () => { if (chrome.runtime.lastError) console.error('UA rule error:', chrome.runtime.lastError); }
     );
 }
